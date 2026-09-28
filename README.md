@@ -61,11 +61,9 @@ winget install -e --id UB-Mannheim.TesseractOCR
 - RSS/Atom 定时监控和公开网页文字变化检查
 - 更新内容在本机生成简短摘要，并通过托盘提醒
 - 用户上传图片作为静态宠物形象
-- 可配置 OpenAI-compatible 图片 API 生成新宠物形象；密钥保存在 Windows 凭据管理器
 
 ## 下一步
 
 - 更多宠物动作和动画
 - 课表与教务网集成（后续单独评估）
 
-图片生成需要用户自行提供兼容 Images API 的地址、模型名称和 API 密钥。桌宠右键菜单 → “生成宠物形象”可配置并生成，也可选择一张参考图片；点击生成时，提示中的参考图会发送到你配置的图像服务。API 密钥保存在 Windows 凭据管理器。运行前通过 `setup.ps1` 安装 `keyring` 依赖。
