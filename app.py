@@ -10,6 +10,7 @@ import calendar
 import ctypes
 import datetime as dt
 import json
+import math
 import os
 import re
 import shutil
@@ -494,14 +495,50 @@ class DesktopPet(tk.Tk):
         self.canvas.bind("<ButtonPress-1>", self.begin_drag); self.canvas.bind("<B1-Motion>", self.drag_pet); self.canvas.bind("<ButtonRelease-1>", self.end_drag); self.canvas.bind("<Button-3>", self.context_menu); self.bind("<Escape>", lambda _e: self.destroy()); self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.tray = None; self.notified = set(); self.start_tray(); self.after(5000, self.check_event_reminders); self.after(15000, self.poll_feeds)
         self.start_control_server()
+        self.canvas.bind("<Enter>", self.start_sway)
+        self.canvas.bind("<Leave>", self.stop_sway)
+
+    def start_sway(self, _event=None):
+        if self.drag_start or getattr(self, "sway_job", None) is not None: return
+        self.sway_phase = 0
+        self.sway_offset = 0
+        self.animate_sway()
+
+    def animate_sway(self):
+        self.sway_job = None
+        if self.drag_start or not self.winfo_viewable():
+            self.stop_sway(); return
+        self.sway_phase += 0.24
+        offset = 6 * math.sin(self.sway_phase)
+        self.canvas.move("all", offset - self.sway_offset, 0)
+        self.sway_offset = offset
+        self.sway_job = self.after(35, self.animate_sway)
+
+    def stop_sway(self, _event=None):
+        if getattr(self, "sway_job", None) is not None:
+            self.after_cancel(self.sway_job)
+        self.sway_job = None
+        offset = getattr(self, "sway_offset", 0)
+        if offset: self.canvas.move("all", -offset, 0)
+        self.sway_offset = 0
+
+    def withdraw(self):
+        self.stop_sway()
+        super().withdraw()
+
+    def destroy(self):
+        self.stop_sway()
+        if getattr(self, "tray", None): self.tray.stop()
+        super().destroy()
 
     def draw_pet(self):
+        self.stop_sway()
         self.canvas.delete("all")
         if self.settings.get("avatar") and Image and ImageTk:
             try:
-                image = Image.open(self.settings["avatar"]).convert("RGBA"); image.thumbnail((150, 150)); self.avatar_photo = ImageTk.PhotoImage(image); self.canvas.create_image(85, 78, image=self.avatar_photo); self.canvas.create_text(85, 178, text="点击打开工作台", fill="#333", font=("Microsoft YaHei UI", 9)); return
+                image = Image.open(self.settings["avatar"]).convert("RGBA"); image.thumbnail((150, 150)); self.avatar_photo = ImageTk.PhotoImage(image); self.canvas.create_image(85, 78, image=self.avatar_photo); return
             except (OSError, ValueError): pass
-        c = self.canvas; c.create_oval(36, 25, 134, 115, fill="#f4b183", outline="#633b27", width=3); c.create_polygon(43, 43, 43, 10, 72, 34, fill="#f4b183", outline="#633b27"); c.create_polygon(127, 43, 127, 10, 98, 34, fill="#f4b183", outline="#633b27"); c.create_oval(61, 58, 69, 68, fill="#333"); c.create_oval(101, 58, 109, 68, fill="#333"); c.create_oval(82, 75, 92, 82, fill="#8b3d3d"); c.create_arc(70, 72, 104, 100, start=200, extent=140, style="arc", width=2); c.create_oval(52, 108, 118, 163, fill="#a9d18e", outline="#45633b", width=3); c.create_text(85, 178, text="点击打开工作台", fill="#333", font=("Microsoft YaHei UI", 9))
+        c = self.canvas; c.create_oval(36, 25, 134, 115, fill="#f4b183", outline="#633b27", width=3); c.create_polygon(43, 43, 43, 10, 72, 34, fill="#f4b183", outline="#633b27"); c.create_polygon(127, 43, 127, 10, 98, 34, fill="#f4b183", outline="#633b27"); c.create_oval(61, 58, 69, 68, fill="#333"); c.create_oval(101, 58, 109, 68, fill="#333"); c.create_oval(82, 75, 92, 82, fill="#8b3d3d"); c.create_arc(70, 72, 104, 100, start=200, extent=140, style="arc", width=2); c.create_oval(52, 108, 118, 163, fill="#a9d18e", outline="#45633b", width=3)
 
     def context_menu(self, event):
         menu = tk.Menu(self, tearoff=0); menu.add_command(label="打开工作台", command=self.open_workbench); menu.add_command(label="上传图片桌宠形象", command=self.upload_avatar); menu.add_command(label="生成宠物形象", command=self.open_avatar_generator); menu.add_command(label="桌宠设置", command=self.open_settings); menu.add_separator(); menu.add_command(label="隐藏桌宠", command=self.withdraw); menu.add_command(label="显示桌宠", command=self.deiconify); menu.add_command(label="退出", command=self.destroy); menu.tk_popup(event.x_root, event.y_root)
@@ -586,6 +623,7 @@ class DesktopPet(tk.Tk):
         else: self.withdraw()
 
     def begin_drag(self, event):
+        self.stop_sway()
         self.drag_start = (event.x_root, event.y_root, self.winfo_x(), self.winfo_y())
 
     def drag_pet(self, event):
