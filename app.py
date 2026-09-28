@@ -36,6 +36,11 @@ try:
 except ImportError:
     psutil = None
 
+try:
+    import pystray
+except ImportError:
+    pystray = None
+
 APP_TITLE = "小桌宠工作台"
 APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "DesktopPet"
 SETTINGS_FILE = APP_DIR / "settings.json"
@@ -80,7 +85,7 @@ def set_autostart(enabled: bool):
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
             if enabled:
-                exe = sys.executable.replace("python.exe", "pythonw.exe")
+                exe = sys.executable[:-10] + "pythonw.exe" if sys.executable.lower().endswith("python.exe") else sys.executable
                 command = f'"{exe}" "{Path(__file__).resolve()}" --startup'
                 winreg.SetValueEx(key, "DesktopPet", 0, winreg.REG_SZ, command)
             else:
@@ -132,9 +137,9 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(master); self.title("首次运行设置" if settings.get("first_run", True) else "桌宠设置"); self.resizable(False, False); self.settings = settings
         self.activation = tk.StringVar(value=settings.get("activation", "hotkey")); self.hotkey = tk.StringVar(value=settings.get("hotkey", "win+alt+o"))
         ttk.Label(self, text="桌宠启动方式", font=("Microsoft YaHei UI", 14, "bold")).pack(padx=24, pady=(18, 8))
-        ttk.Radiobutton(self, text="开机自启并自动显示桌宠", variable=self.activation, value="startup").pack(anchor="w", padx=24, pady=4)
-        ttk.Radiobutton(self, text="快捷键唤醒（不设置开机自启）", variable=self.activation, value="hotkey").pack(anchor="w", padx=24, pady=4)
-        ttk.Label(self, text="快捷键模式下，需要先运行桌宠程序；之后桌宠可由快捷键显示/隐藏。", wraplength=360, foreground="#666").pack(anchor="w", padx=24, pady=(4, 10))
+        ttk.Radiobutton(self, text="登录 Windows 后自动显示桌宠", variable=self.activation, value="startup").pack(anchor="w", padx=24, pady=4)
+        ttk.Radiobutton(self, text="登录后在后台运行，按快捷键显示/隐藏", variable=self.activation, value="hotkey").pack(anchor="w", padx=24, pady=4)
+        ttk.Label(self, text="快捷键需要后台程序保持运行，因此此模式会在登录后启动到系统托盘，桌宠本体保持隐藏。", wraplength=360, foreground="#666").pack(anchor="w", padx=24, pady=(4, 10))
         row = ttk.Frame(self); row.pack(fill="x", padx=24); ttk.Label(row, text="唤醒快捷键：").pack(side="left"); ttk.Entry(row, textvariable=self.hotkey, width=18).pack(side="left")
         ttk.Label(self, text="默认：Win + Alt + O", foreground="#666").pack(anchor="w", padx=24, pady=(4, 14)); ttk.Button(self, text="保存", command=self.finish).pack(pady=(0, 18))
         self.grab_set(); self.protocol("WM_DELETE_WINDOW", self.finish)
@@ -143,7 +148,7 @@ class SettingsDialog(tk.Toplevel):
         value = self.hotkey.get().strip().lower()
         if not parse_hotkey(value):
             messagebox.showwarning("快捷键格式", "请输入类似 win+alt+o 或 ctrl+shift+p 的组合。", parent=self); return
-        self.settings.update({"first_run": False, "activation": self.activation.get(), "hotkey": value}); save_settings(self.settings); set_autostart(self.activation.get() == "startup")
+        self.settings.update({"first_run": False, "activation": self.activation.get(), "hotkey": value}); save_settings(self.settings); set_autostart(True)
         self.master.apply_activation_visibility(); self.destroy()
 
 
@@ -252,8 +257,9 @@ class DesktopPet(tk.Tk):
         self.title("Desktop Pet"); self.overrideredirect(True); self.attributes("-topmost", True); self.configure(bg="#ff00ff")
         try: self.attributes("-transparentcolor", "#ff00ff")
         except tk.TclError: pass
-        self.geometry("170x190+80+80"); self.canvas = tk.Canvas(self, width=170, height=190, bg="#ff00ff", highlightthickness=0); self.canvas.pack(); self.draw_pet()
+        position = settings.get("position", [80, 80]); self.geometry(f"170x190+{int(position[0])}+{int(position[1])}"); self.canvas = tk.Canvas(self, width=170, height=190, bg="#ff00ff", highlightthickness=0); self.canvas.pack(); self.draw_pet()
         self.canvas.bind("<ButtonPress-1>", self.begin_drag); self.canvas.bind("<B1-Motion>", self.drag_pet); self.canvas.bind("<ButtonRelease-1>", self.end_drag); self.canvas.bind("<Button-3>", self.context_menu); self.bind("<Escape>", lambda _e: self.destroy()); self.protocol("WM_DELETE_WINDOW", self.destroy); self.after(100, self.poll_hotkey)
+        self.tray = None; self.start_tray()
 
     def draw_pet(self):
         self.canvas.delete("all")
@@ -284,36 +290,51 @@ class DesktopPet(tk.Tk):
 
     def begin_drag(self, event):
         self.drag_start = (event.x_root, event.y_root, self.winfo_x(), self.winfo_y())
-        self.click_job = self.after(180, self.open_if_click)
-
-    def open_if_click(self):
-        if self.drag_start is not None:
-            self.open_workbench()
-            self.click_job = None
 
     def drag_pet(self, event):
         if not self.drag_start: return
         start_x, start_y, window_x, window_y = self.drag_start
-        if abs(event.x_root - start_x) + abs(event.y_root - start_y) >= 6 and self.click_job:
-            self.after_cancel(self.click_job); self.click_job = None
         self.geometry(f"+{window_x + event.x_root - start_x}+{window_y + event.y_root - start_y}")
 
     def end_drag(self, event):
         if not self.drag_start: return
-        if self.click_job and abs(event.x_root - self.drag_start[0]) + abs(event.y_root - self.drag_start[1]) < 6:
-            self.after_cancel(self.click_job); self.click_job = None; self.open_workbench()
+        start_x, start_y = self.drag_start[:2]
+        moved = abs(event.x_root - start_x) + abs(event.y_root - start_y)
         self.drag_start = None
+        if moved < 8:
+            self.open_workbench()
+        else:
+            self.settings["position"] = [self.winfo_x(), self.winfo_y()]; save_settings(self.settings)
 
     def poll_hotkey(self):
         parsed = parse_hotkey(self.settings.get("hotkey", "win+alt+o")); down = False
         if self.settings.get("activation") == "hotkey" and parsed and os.name == "nt":
             modifiers, key = parsed; user32 = ctypes.windll.user32
             down = bool(user32.GetAsyncKeyState(key) & 0x8000)
-            for flag, vk in ((0x0001, 0x12), (0x0002, 0x11), (0x0004, 0x10), (0x0008, 0x5B)):
-                if modifiers & flag: down = down and bool(user32.GetAsyncKeyState(vk) & 0x8000)
+            for flag, vks in ((0x0001, (0x12,)), (0x0002, (0x11,)), (0x0004, (0x10,)), (0x0008, (0x5B, 0x5C))):
+                if modifiers & flag: down = down and any(bool(user32.GetAsyncKeyState(vk) & 0x8000) for vk in vks)
         if down and not self.hotkey_was_down: self.deiconify() if self.state() == "withdrawn" else self.withdraw()
         self.hotkey_was_down = down
         self.after(100, self.poll_hotkey)
+
+    def start_tray(self):
+        if not pystray or not Image:
+            return
+        icon_image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(icon_image); draw.ellipse((7, 9, 57, 59), fill="#f4b183", outline="#633b27", width=3); draw.ellipse((20, 27, 24, 32), fill="#333333"); draw.ellipse((40, 27, 44, 32), fill="#333333")
+        menu = pystray.Menu(
+            pystray.MenuItem("显示/隐藏桌宠", lambda _icon, _item: self.after(0, self.toggle_pet)),
+            pystray.MenuItem("打开工作台", lambda _icon, _item: self.after(0, self.open_workbench)),
+            pystray.MenuItem("桌宠设置", lambda _icon, _item: self.after(0, self.open_settings)),
+            pystray.MenuItem("退出", lambda icon, _item: (icon.stop(), self.after(0, self.destroy))),
+        )
+        self.tray = pystray.Icon("desktop_pet", icon_image, "桌宠工作台", menu)
+        threading.Thread(target=self.tray.run, daemon=True).start()
+
+    def toggle_pet(self):
+        if self.state() == "withdrawn": self.deiconify()
+        else: self.withdraw()
 
 
 def main():
