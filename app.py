@@ -485,27 +485,12 @@ class DesktopPet(tk.Tk):
         c = self.canvas; c.create_oval(36, 25, 134, 115, fill="#f4b183", outline="#633b27", width=3); c.create_polygon(43, 43, 43, 10, 72, 34, fill="#f4b183", outline="#633b27"); c.create_polygon(127, 43, 127, 10, 98, 34, fill="#f4b183", outline="#633b27"); c.create_oval(61, 58, 69, 68, fill="#333"); c.create_oval(101, 58, 109, 68, fill="#333"); c.create_oval(82, 75, 92, 82, fill="#8b3d3d"); c.create_arc(70, 72, 104, 100, start=200, extent=140, style="arc", width=2); c.create_oval(52, 108, 118, 163, fill="#a9d18e", outline="#45633b", width=3); c.create_text(85, 178, text="点击打开工作台", fill="#333", font=("Microsoft YaHei UI", 9))
 
     def context_menu(self, event):
-        menu = tk.Menu(self, tearoff=0); menu.add_command(label="打开工作台", command=self.open_workbench); menu.add_command(label="和桌宠聊聊", command=self.open_chat); menu.add_command(label="上传图片桌宠形象", command=self.upload_avatar); menu.add_command(label="生成宠物形象", command=self.open_avatar_generator); menu.add_command(label="桌宠设置", command=self.open_settings); menu.add_separator(); menu.add_command(label="隐藏桌宠", command=self.withdraw); menu.add_command(label="显示桌宠", command=self.deiconify); menu.add_command(label="退出", command=self.destroy); menu.tk_popup(event.x_root, event.y_root)
+        menu = tk.Menu(self, tearoff=0); menu.add_command(label="打开工作台", command=self.open_workbench); menu.add_command(label="上传图片桌宠形象", command=self.upload_avatar); menu.add_command(label="生成宠物形象", command=self.open_avatar_generator); menu.add_command(label="桌宠设置", command=self.open_settings); menu.add_separator(); menu.add_command(label="隐藏桌宠", command=self.withdraw); menu.add_command(label="显示桌宠", command=self.deiconify); menu.add_command(label="退出", command=self.destroy); menu.tk_popup(event.x_root, event.y_root)
 
     def upload_avatar(self):
         path = filedialog.askopenfilename(filetypes=[("图片", "*.png;*.jpg;*.jpeg;*.webp;*.bmp")])
         if path: self.settings["avatar"] = path; save_settings(self.settings); self.draw_pet()
 
-    def open_chat(self):
-        dialog = tk.Toplevel(self); dialog.title("和桌宠聊聊"); dialog.geometry("390x420"); dialog.transient(self)
-        history = tk.Text(dialog, wrap="word", state="disabled", padx=10, pady=8); history.pack(fill="both", expand=True)
-        row = ttk.Frame(dialog, padding=8); row.pack(fill="x"); entry = ttk.Entry(row); entry.pack(side="left", fill="x", expand=True)
-        def reply(_event=None):
-            prompt = entry.get().strip()
-            if not prompt: return
-            low = prompt.lower(); today = dt.date.today().isoformat(); todays = [event for event in self.events if event["date"] == today and not event.get("done")]
-            if any(word in low for word in ("你好", "嗨", "hello", "hi")): answer = "你好呀，我在这里陪你。要不要看看今天的安排？"
-            elif any(word in low for word in ("今天", "日程", "安排", "待办", "ddl")):
-                answer = "今天还没有未完成的安排。" if not todays else "今天的安排：" + "；".join(f"{e.get('start', '全天')} {e['title']}" for e in sorted(todays, key=lambda e: e.get("start", ""))[:5])
-            elif any(word in low for word in ("累", "休息", "困")): answer = "辛苦啦。起来伸展一下，喝口水再继续吧。"
-            else: answer = "我听到啦！我现在可以陪你聊聊，也能帮你打开日历整理安排。"
-            history.configure(state="normal"); history.insert("end", f"你：{prompt}\n桌宠：{answer}\n\n"); history.configure(state="disabled"); history.see("end"); entry.delete(0, "end")
-        ttk.Button(row, text="发送", command=reply).pack(side="left", padx=(6, 0)); entry.bind("<Return>", reply); entry.focus_set()
 
     def open_avatar_generator(self):
         try:

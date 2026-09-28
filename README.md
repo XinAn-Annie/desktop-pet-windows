@@ -61,7 +61,6 @@ winget install -e --id UB-Mannheim.TesseractOCR
 - RSS/Atom 定时监控和公开网页文字变化检查
 - 更新内容在本机生成简短摘要，并通过托盘提醒
 - 用户上传图片作为静态宠物形象
-- 简单本地对话互动
 - 可配置 OpenAI-compatible 图片 API 生成新宠物形象；密钥保存在 Windows 凭据管理器
 
 ## 下一步
