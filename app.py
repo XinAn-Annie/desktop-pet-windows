@@ -19,6 +19,8 @@ import tkinter as tk
 from ctypes import wintypes
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from urllib.parse import urlparse
+from feed_monitor import fetch_latest
 
 try:
     from PIL import Image, ImageGrab, ImageTk
@@ -46,6 +48,7 @@ APP_TITLE = "小桌宠工作台"
 APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "DesktopPet"
 SETTINGS_FILE = APP_DIR / "settings.json"
 EVENTS_FILE = APP_DIR / "events.json"
+FEEDS_FILE = APP_DIR / "feeds.json"
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 EVENT_COLORS = {"ddl": "#ffd6d6", "normal": "#fff1b8", "regular": "#cfe3ff", "meeting": "#ffd1e3"}
 EVENT_LABELS = {"ddl": "DDL", "normal": "普通", "regular": "规律", "meeting": "会议"}
@@ -85,6 +88,19 @@ def load_events() -> list[dict]:
 def save_events(events: list[dict]):
     APP_DIR.mkdir(parents=True, exist_ok=True)
     EVENTS_FILE.write_text(json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_feeds() -> list[dict]:
+    try:
+        value = json.loads(FEEDS_FILE.read_text(encoding="utf-8"))
+        return value if isinstance(value, list) else []
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+
+def save_feeds(feeds: list[dict]):
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    FEEDS_FILE.write_text(json.dumps(feeds, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def add_minutes(time_text: str, amount: int) -> str:
@@ -256,14 +272,48 @@ FirstRunDialog = SettingsDialog
 class Workbench(tk.Toplevel):
     def __init__(self, master: "DesktopPet"):
         super().__init__(master); self.title(APP_TITLE); self.geometry("980x680"); self.minsize(850, 560); self.transient(master)
-        self.events = master.events; self.selected_date = dt.date.today(); self.input_image = None; self._build(); self.refresh_calendar(); self.refresh_processes(); self.after(4000, self.auto_refresh_processes)
+        self.events = master.events; self.selected_date = dt.date.today(); self.input_image = None; self._build(); self.refresh_calendar(); self.refresh_processes(); self.after(4000, self.auto_refresh_processes); self.after(3000, self.auto_refresh_feeds)
 
     def _build(self):
         top = ttk.Frame(self, padding=10); top.pack(fill="x"); self.date_label = ttk.Label(top, font=("Microsoft YaHei UI", 14, "bold")); self.date_label.pack(side="left"); self.status = ttk.Label(top, text="截图 Ctrl+C 后，在输入框按 Ctrl+V"); self.status.pack(side="right"); self._update_date()
         notebook = ttk.Notebook(self); notebook.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         calendar_tab = ttk.Frame(notebook, padding=8); notebook.add(calendar_tab, text="日历与 DDL"); self._build_calendar_tab(calendar_tab)
         process_tab = ttk.Frame(notebook, padding=8); notebook.add(process_tab, text="运行中的程序"); self._build_process_tab(process_tab)
-        web_tab = ttk.Frame(notebook, padding=8); notebook.add(web_tab, text="网址提醒"); ttk.Label(web_tab, text="网址监控模块预留：下一步接入 RSS/Atom 和网页更新摘要。", foreground="#555").pack(anchor="w")
+        web_tab = ttk.Frame(notebook, padding=8); notebook.add(web_tab, text="网址提醒"); self._build_feeds_tab(web_tab)
+
+    def _build_feeds_tab(self, parent):
+        ttk.Label(parent, text="订阅 RSS/Atom；普通网页会尝试检测公开订阅或检查页面文字变化。摘要在本机生成。", wraplength=820).pack(anchor="w", pady=(0, 8))
+        row = ttk.Frame(parent); row.pack(fill="x"); self.feed_url_var = tk.StringVar(); ttk.Entry(row, textvariable=self.feed_url_var).pack(side="left", fill="x", expand=True); ttk.Button(row, text="添加网址", command=self.add_feed).pack(side="left", padx=5)
+        self.feed_tree = ttk.Treeview(parent, columns=("source", "latest", "summary", "checked"), show="headings", height=14)
+        for col, label, width in (("source", "网址", 230), ("latest", "最新更新", 210), ("summary", "本地摘要", 330), ("checked", "检查状态", 150)):
+            self.feed_tree.heading(col, text=label); self.feed_tree.column(col, width=width)
+        self.feed_tree.pack(fill="both", expand=True, pady=8)
+        actions = ttk.Frame(parent); actions.pack(fill="x"); ttk.Button(actions, text="立即检查选中", command=self.check_selected_feed).pack(side="left"); ttk.Button(actions, text="删除订阅", command=self.delete_selected_feed).pack(side="left", padx=5); self.refresh_feed_view()
+
+    def add_feed(self):
+        url = self.feed_url_var.get().strip()
+        if self.master.add_feed(url): self.feed_url_var.set(""); self.refresh_feed_view()
+
+    def check_selected_feed(self):
+        selection = self.feed_tree.selection()
+        if selection: self.master.check_feed(selection[0])
+
+    def delete_selected_feed(self):
+        selection = self.feed_tree.selection()
+        if selection: self.master.delete_feed(selection[0]); self.refresh_feed_view()
+
+    def refresh_feed_view(self):
+        if not hasattr(self, "feed_tree") or not self.feed_tree.winfo_exists(): return
+        for row in self.feed_tree.get_children(): self.feed_tree.delete(row)
+        for feed in self.master.feeds:
+            iid = feed["url"]
+            state = feed.get("error") or feed.get("last_checked", "尚未检查")
+            self.feed_tree.insert("", "end", iid=iid, values=(feed["url"], feed.get("title", ""), feed.get("summary", ""), state))
+
+    def auto_refresh_feeds(self):
+        if not self.winfo_exists(): return
+        if self.winfo_viewable(): self.refresh_feed_view()
+        self.after(5000, self.auto_refresh_feeds)
 
     def _build_calendar_tab(self, parent):
         body = ttk.Frame(parent); body.pack(fill="both", expand=True); left = ttk.Frame(body); left.pack(side="left", fill="both", expand=True); nav = ttk.Frame(left); nav.pack(fill="x")
@@ -411,12 +461,12 @@ class Workbench(tk.Toplevel):
 class DesktopPet(tk.Tk):
     def __init__(self, settings):
         super().__init__(); self.settings = settings; self.events = load_events(); self.workbench = None; self.avatar_photo = None; self.drag_start = None; self.click_job = None; self.hotkey_was_down = False
-        self.title("Desktop Pet"); self.overrideredirect(True); self.attributes("-topmost", True); self.configure(bg="#ff00ff")
+        self.feeds = load_feeds(); self.checking_feeds = set(); self.title("Desktop Pet"); self.overrideredirect(True); self.attributes("-topmost", True); self.configure(bg="#ff00ff")
         try: self.attributes("-transparentcolor", "#ff00ff")
         except tk.TclError: pass
         position = settings.get("position", [80, 80]); self.geometry(f"170x190+{int(position[0])}+{int(position[1])}"); self.canvas = tk.Canvas(self, width=170, height=190, bg="#ff00ff", highlightthickness=0); self.canvas.pack(); self.draw_pet()
         self.canvas.bind("<ButtonPress-1>", self.begin_drag); self.canvas.bind("<B1-Motion>", self.drag_pet); self.canvas.bind("<ButtonRelease-1>", self.end_drag); self.canvas.bind("<Button-3>", self.context_menu); self.bind("<Escape>", lambda _e: self.destroy()); self.protocol("WM_DELETE_WINDOW", self.destroy); self.after(100, self.poll_hotkey)
-        self.tray = None; self.notified = set(); self.start_tray(); self.after(5000, self.check_event_reminders)
+        self.tray = None; self.notified = set(); self.start_tray(); self.after(5000, self.check_event_reminders); self.after(15000, self.poll_feeds)
 
     def draw_pet(self):
         self.canvas.delete("all")
@@ -492,6 +542,51 @@ class DesktopPet(tk.Tk):
     def toggle_pet(self):
         if self.state() == "withdrawn": self.deiconify()
         else: self.withdraw()
+
+    def add_feed(self, url):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            messagebox.showwarning("网址格式", "请输入完整的 http:// 或 https:// 网址。", parent=self); return False
+        if any(item["url"] == url for item in self.feeds):
+            messagebox.showinfo("已订阅", "这个网址已经在监控列表中。", parent=self); return False
+        self.feeds.append({"url": url, "title": "", "summary": "", "last_id": "", "last_checked": "尚未检查"}); save_feeds(self.feeds); self.check_feed(url); return True
+
+    def delete_feed(self, url):
+        self.feeds[:] = [feed for feed in self.feeds if feed["url"] != url]; save_feeds(self.feeds)
+
+    def check_feed(self, url):
+        if url in self.checking_feeds: return
+        feed = next((item for item in self.feeds if item["url"] == url), None)
+        if not feed: return
+        self.checking_feeds.add(url); feed.pop("error", None)
+        threading.Thread(target=self.fetch_feed_thread, args=(url,), daemon=True).start()
+
+    def fetch_feed_thread(self, url):
+        try: result, error = fetch_latest(url), None
+        except Exception as exc: result, error = None, str(exc)
+        try: self.after(0, lambda: self.finish_feed_check(url, result, error))
+        except tk.TclError: pass
+
+    def finish_feed_check(self, url, result, error):
+        self.checking_feeds.discard(url); feed = next((item for item in self.feeds if item["url"] == url), None)
+        if not feed: return
+        feed["last_checked"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+        if error:
+            feed["error"] = error[:160]
+        else:
+            old_id = feed.get("last_id", ""); changed = bool(old_id and old_id != result["latest_id"])
+            feed.update(result); feed["last_id"] = result["latest_id"]; feed.pop("error", None)
+            if changed and self.tray:
+                prefix = "网页内容更新" if result.get("page_mode") else "订阅有新内容"
+                try: self.tray.notify(f"{result['title']}\n{result['summary']}", title=prefix)
+                except Exception: pass
+        save_feeds(self.feeds)
+        if self.workbench and self.workbench.winfo_exists(): self.workbench.refresh_feed_view()
+
+    def poll_feeds(self):
+        if not self.winfo_exists(): return
+        for feed in list(self.feeds): self.check_feed(feed["url"])
+        self.after(15 * 60 * 1000, self.poll_feeds)
 
     def check_event_reminders(self):
         if not self.winfo_exists(): return

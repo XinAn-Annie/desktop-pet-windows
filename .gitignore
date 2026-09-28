@@ -14,4 +14,5 @@ build/
 # Local user data and generated runtime settings
 events.json
 settings.json
+feeds.json
 assets/private/
