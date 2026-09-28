@@ -158,7 +158,7 @@ def visible_app_processes() -> list[tuple[str, str, int, str]]:
 
 def set_autostart(enabled: bool):
     if os.name != "nt":
-        return
+        return False
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
@@ -171,8 +171,9 @@ def set_autostart(enabled: bool):
                     winreg.DeleteValue(key, "DesktopPet")
                 except FileNotFoundError:
                     pass
+        return True
     except OSError:
-        pass
+        return False
 
 
 def parse_hotkey(value: str) -> tuple[int, int] | None:
@@ -263,7 +264,8 @@ class SettingsDialog(tk.Toplevel):
         value = self.hotkey.get().strip().lower()
         if not parse_hotkey(value):
             messagebox.showwarning("快捷键格式", "请输入类似 win+alt+o 或 ctrl+shift+p 的组合。", parent=self); return
-        self.settings.update({"first_run": False, "activation": self.activation.get(), "hotkey": value}); save_settings(self.settings); set_autostart(True)
+        self.settings.update({"first_run": False, "activation": self.activation.get(), "hotkey": value}); save_settings(self.settings)
+        if not set_autostart(True): messagebox.showwarning("开机启动未设置", "Windows 未允许写入当前用户的开机启动项。可通过系统托盘手动启动桌宠。", parent=self)
         self.master.apply_activation_visibility(); self.destroy()
 
 
@@ -507,7 +509,14 @@ class DesktopPet(tk.Tk):
             ("API 密钥", "key", saved_key, True),
         )):
             ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", pady=6); fields[name] = tk.StringVar(value=default); ttk.Entry(form, textvariable=fields[name], width=48, show="*" if secret else "").grid(row=row, column=1, sticky="ew", pady=6)
-        ttk.Label(form, text="形象描述",).grid(row=3, column=0, sticky="nw", pady=6); prompt = tk.Text(form, height=5, wrap="word"); prompt.grid(row=3, column=1, sticky="ew", pady=6); prompt.insert("1.0", "一只可爱、友善、适合做桌面宠物的原创小动物，单体居中，简洁背景")
+        reference_path = tk.StringVar(value="")
+        ttk.Label(form, text="参考图片").grid(row=3, column=0, sticky="w", pady=6)
+        reference_row = ttk.Frame(form); reference_row.grid(row=3, column=1, sticky="ew", pady=6); ttk.Button(reference_row, text="选择图片（可选）", command=lambda: choose_reference()).pack(side="left"); reference_label = ttk.Label(reference_row, text="未选择"); reference_label.pack(side="left", padx=8)
+        def choose_reference():
+            path = filedialog.askopenfilename(parent=dialog, filetypes=[("图片", "*.png;*.jpg;*.jpeg;*.webp")])
+            if path: reference_path.set(path); reference_label.configure(text=Path(path).name)
+        ttk.Label(form, text="形象描述").grid(row=4, column=0, sticky="nw", pady=6); prompt = tk.Text(form, height=5, wrap="word"); prompt.grid(row=4, column=1, sticky="ew", pady=6); prompt.insert("1.0", "参考图片中的对象，生成一只可爱、友善、适合做桌面宠物的原创形象，单体居中，简洁背景")
+        ttk.Label(form, text="生成时，参考图会发送到上方填写的图像服务。", wraplength=360, foreground="#666").grid(row=5, column=1, sticky="w")
         form.columnconfigure(1, weight=1); buttons = ttk.Frame(dialog, padding=(14, 4, 14, 14)); buttons.pack(fill="x")
         generate_button = ttk.Button(buttons, text="生成", command=lambda: submit()); generate_button.pack(side="right")
         def submit():
@@ -519,11 +528,11 @@ class DesktopPet(tk.Tk):
             try: keyring.set_password("desktop-pet-windows", "image-api-key", api_key)
             except Exception as exc: messagebox.showerror("密钥保存失败", str(exc), parent=dialog); return
             self.settings["image_api_base"] = endpoint; self.settings["image_model"] = model; save_settings(self.settings); generate_button.configure(state="disabled", text="生成中…")
-            threading.Thread(target=self.generate_avatar_thread, args=(endpoint, model, api_key, description, dialog), daemon=True).start()
+            threading.Thread(target=self.generate_avatar_thread, args=(endpoint, model, api_key, description, reference_path.get(), dialog), daemon=True).start()
         ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right", padx=8)
 
-    def generate_avatar_thread(self, endpoint, model, api_key, prompt, dialog):
-        try: image_data, error = generate_image(endpoint, model, api_key, prompt), None
+    def generate_avatar_thread(self, endpoint, model, api_key, prompt, reference_image, dialog):
+        try: image_data, error = generate_image(endpoint, model, api_key, prompt, reference_image), None
         except Exception as exc: image_data, error = None, str(exc)
         try: self.after(0, lambda: self.finish_avatar_generation(image_data, error, dialog))
         except tk.TclError: pass

@@ -18,10 +18,15 @@
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\setup.ps1
-.\.venv\Scripts\python.exe app.py
 ```
 
-不要把桌宠作为 PowerShell 前台进程长期运行，否则关闭 PowerShell 会结束桌宠。安装依赖后，建议双击 `start_desktop_pet.vbs` 后台启动；它不会打开控制台窗口。
+日常后台启动请双击：
+
+```text
+start_desktop_pet.vbs
+```
+
+不要把桌宠作为 PowerShell 前台进程长期运行，否则关闭 PowerShell 会结束桌宠。
 
 首次运行选择一种登录后的行为：自动显示桌宠，或后台驻留并通过快捷键显示/隐藏。全局快捷键需要后台进程运行，因此快捷键模式会在 Windows 登录后启动到系统托盘，但不显示桌宠本体。托盘菜单提供显示/隐藏、打开工作台、设置和退出。之后可右键桌宠或托盘图标 → “桌宠设置”修改。
 
@@ -61,7 +66,7 @@ winget install -e --id UB-Mannheim.TesseractOCR
 
 ## 下一步
 
-- AI 图片生成宠物形象和动画状态（目前需要配置图像模型服务）
+- 更多宠物动作和动画
 - 课表与教务网集成（后续单独评估）
 
-图片生成需要用户自行提供兼容 Images API 的地址、模型名称和 API 密钥。桌宠右键菜单 → “生成宠物形象”可配置并生成；运行前通过 `setup.ps1` 安装 `keyring` 依赖。
+图片生成需要用户自行提供兼容 Images API 的地址、模型名称和 API 密钥。桌宠右键菜单 → “生成宠物形象”可配置并生成，也可选择一张参考图片；点击生成时，提示中的参考图会发送到你配置的图像服务。API 密钥保存在 Windows 凭据管理器。运行前通过 `setup.ps1` 安装 `keyring` 依赖。
