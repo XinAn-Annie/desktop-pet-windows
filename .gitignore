@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.env
+.env.*
+*.log
+dist/
+build/
+*.zip
+
+# Local user data and generated runtime settings
+events.json
+settings.json
+assets/private/
