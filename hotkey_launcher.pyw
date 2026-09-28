@@ -8,6 +8,8 @@ not already running.
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
+import logging
 import json
 import os
 import socket
@@ -75,20 +77,46 @@ def main():
         lock.bind(("127.0.0.1", LOCK_PORT))
     except OSError:
         return
-    was_down = False
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(filename=str(APP_DIR / 'launcher.log'), level=logging.INFO,
+                        format='%(asctime)s %(levelname)s %(message)s', encoding='utf-8')
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    registered = None
+    failed = None
     launching_until = 0.0
-    while True:
-        settings = load_settings()
-        if settings.get("activation") != "hotkey":
-            return
-        shortcut = parse_hotkey(settings.get("hotkey", "win+alt+o"))
-        down = bool(shortcut and pressed(*shortcut))
-        if down and not was_down:
-            if not toggle_running_pet() and time.monotonic() >= launching_until:
-                start_pet()
-                launching_until = time.monotonic() + 3
-        was_down = down
-        time.sleep(0.06)
+    logging.info('Launcher started, pid=%s', os.getpid())
+    try:
+        while True:
+            settings = load_settings()
+            if settings.get("activation") != "hotkey":
+                return
+            shortcut = parse_hotkey(settings.get("hotkey", "win+alt+o"))
+            if shortcut != registered and shortcut != failed:
+                if registered:
+                    user32.UnregisterHotKey(None, 1)
+                    registered = None
+                if shortcut and user32.RegisterHotKey(None, 1, shortcut[0] | 0x4000, shortcut[1]):
+                    registered = shortcut
+                    failed = None
+                    logging.info('Hotkey registered: %s', settings.get('hotkey'))
+                else:
+                    failed = shortcut
+                    logging.error('Hotkey registration failed: %s error=%s', shortcut, ctypes.get_last_error())
+                    user32.MessageBoxW(None, '桌宠快捷键注册失败，可能被其他软件占用。请打开桌宠设置，更换快捷键后保存。', '桌宠启动器', 0x10)
+            message = wintypes.MSG()
+            while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+                if message.message == 0x0312 and message.wParam == 1:
+                    logging.info('Hotkey received')
+                    if not toggle_running_pet() and time.monotonic() >= launching_until:
+                        start_pet()
+                        logging.info('Pet launch requested')
+                        launching_until = time.monotonic() + 3
+            time.sleep(0.06)
+    finally:
+        if registered:
+            user32.UnregisterHotKey(None, 1)
+        lock.close()
+        logging.info('Launcher stopped')
 
 
 if __name__ == "__main__":
