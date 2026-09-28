@@ -286,7 +286,16 @@ FirstRunDialog = SettingsDialog
 
 class Workbench(tk.Toplevel):
     def __init__(self, master: "DesktopPet"):
-        super().__init__(master); self.title(APP_TITLE); self.geometry("980x680"); self.minsize(850, 560); self.transient(master)
+        super().__init__(master); self.title(APP_TITLE); self.transient(master)
+        area = wintypes.RECT()
+        if os.name == "nt" and ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(area), 0):
+            left, top, screen_w, screen_h = area.left, area.top, area.right - area.left, area.bottom - area.top
+        else:
+            left, top, screen_w, screen_h = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+        width, height = min(1120, screen_w - 24), screen_h - 64
+        self.geometry(f"{width}x{height}+{left + (screen_w - width) // 2}+{top + 12}")
+        self.minsize(min(850, width), min(560, height))
+        self.full_day = tk.BooleanVar(value=True)
         self.events = master.events; self.selected_date = dt.date.today(); self.input_image = None; self._build(); self.refresh_calendar(); self.refresh_processes(); self.after(4000, self.auto_refresh_processes); self.after(3000, self.auto_refresh_feeds)
 
     def _build(self):
@@ -337,6 +346,8 @@ class Workbench(tk.Toplevel):
         for kind, label in EVENT_LABELS.items(): tk.Label(legend, text=f"  {label}  ", bg=EVENT_COLORS[kind]).pack(side="left", padx=2)
         right = ttk.LabelFrame(body, text="当天时间安排", padding=8); right.pack(side="right", fill="both", expand=True, padx=(14, 0)); self.day_title = ttk.Label(right, font=("Microsoft YaHei UI", 11, "bold")); self.day_title.pack(anchor="w")
         timeline_frame = ttk.Frame(right); timeline_frame.pack(fill="both", expand=True, pady=6); self.timeline = tk.Canvas(timeline_frame, height=300, background="white", highlightthickness=0); timeline_scroll = ttk.Scrollbar(timeline_frame, orient="vertical", command=self.timeline.yview); self.timeline.configure(yscrollcommand=timeline_scroll.set); self.timeline.pack(side="left", fill="both", expand=True); timeline_scroll.pack(side="right", fill="y"); self.timeline.bind("<Configure>", lambda _e: self.refresh_timeline())
+        ttk.Checkbutton(right, text="显示全天（取消勾选可放大时间轴）", variable=self.full_day, command=self.refresh_timeline).pack(anchor="w")
+        self.timeline.bind("<MouseWheel>", lambda event: self.timeline.yview_scroll(-int(event.delta / 120), "units"))
         ttk.Label(right, text="添加文字或规律事件，例如：9月10-29每天上午2点上课").pack(anchor="w"); self.input_box = tk.Text(right, height=4, wrap="word"); self.input_box.pack(fill="x", pady=4); self.input_box.bind("<Control-v>", self.on_paste)
         controls = ttk.Frame(right); controls.pack(fill="x"); self.kind_var = tk.StringVar(value="自动识别"); self.kind_values = {"自动识别": "auto", "DDL": "ddl", "普通事件": "normal", "规律事件": "regular", "会议": "meeting"}; ttk.Combobox(controls, textvariable=self.kind_var, values=list(self.kind_values), state="readonly", width=10).pack(side="left"); ttk.Button(controls, text="解析并添加", command=self.add_event_text).pack(side="left", padx=5); ttk.Button(controls, text="编辑", command=self.edit_event).pack(side="left"); ttk.Button(controls, text="完成/恢复", command=self.toggle_done).pack(side="left", padx=5); ttk.Button(controls, text="删除选中", command=self.delete_event).pack(side="right")
 
@@ -370,18 +381,26 @@ class Workbench(tk.Toplevel):
 
     def refresh_timeline(self):
         if not hasattr(self, "timeline") or not self.timeline.winfo_exists(): return
-        canvas = self.timeline; canvas.delete("all"); width = max(canvas.winfo_width(), 340); hour_height = 46; label_width = 48; canvas.configure(scrollregion=(0, 0, width, hour_height * 24))
-        for hour in range(25):
-            y = hour * hour_height; canvas.create_text(4, y + 2, anchor="nw", text=f"{hour:02d}:00", fill="#666", font=("Microsoft YaHei UI", 8)); canvas.create_line(label_width, y, width, y, fill="#e7e7e7")
+        canvas = self.timeline; canvas.delete("all"); width = max(canvas.winfo_width(), 340); label_width = 48
         values = sorted([x for x in self.events if x["date"] == self.selected_date.isoformat()], key=lambda x: x.get("start", x.get("time", "全天")))
+        all_day = [x for x in values if x.get("start", x.get("time", "全天")) == "全天"]
+        header = len(all_day) * 26
+        hour_height = max(8, (canvas.winfo_height() - header - 22) / 24) if self.full_day.get() else 46
+        canvas.configure(scrollregion=(0, 0, width, header + hour_height * 24 + 22))
+        if self.full_day.get(): canvas.yview_moveto(0)
+        for hour in range(25):
+            y = header + hour * hour_height
+            if hour_height >= 18 or hour % 2 == 0: canvas.create_text(4, y + 2, anchor="nw", text=f"{hour:02d}:00", fill="#666", font=("Microsoft YaHei UI", 8))
+            canvas.create_line(label_width, y, width, y, fill="#e7e7e7")
         for event in values:
             start, end = event.get("start", event.get("time", "全天")), event.get("end", "全天")
-            if start == "全天": y1, y2 = 1, 24
+            if start == "全天": y1, y2 = all_day.index(event) * 26, (all_day.index(event) + 1) * 26
             else:
                 try:
                     sh, sm = map(int, start.split(":")); eh, em = map(int, end.split(":")); y1 = sh * hour_height + sm * hour_height / 60; y2 = eh * hour_height + em * hour_height / 60
                 except (ValueError, AttributeError): continue
                 if y2 <= y1: y2 = y1 + hour_height
+                y1 += header; y2 += header
             kind = event.get("kind", "normal"); color = EVENT_COLORS.get(kind, EVENT_COLORS["normal"]); selected = event is getattr(self, "selected_event", None); tag = f"event_{id(event)}"
             canvas.create_rectangle(label_width + 3, y1 + 2, width - 4, max(y2 - 2, y1 + 22), fill=color, outline="#555" if selected else color, width=2 if selected else 1, tags=(tag,))
             prefix = "✓ " if event.get("done") else ""; when = "全天" if start == "全天" else f"{start}-{end}"
