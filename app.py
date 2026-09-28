@@ -410,14 +410,6 @@ class Workbench(tk.Toplevel):
 
     def finish_ocr(self, text): self.input_box.delete("1.0", "end"); self.input_box.insert("1.0", text.strip()); self.status.config(text="OCR 完成，请确认后解析")
 
-    def choose_schedule_image(self):
-        if not Image: messagebox.showerror("缺少 Pillow", "请先运行 setup.ps1。", parent=self); return
-        path = filedialog.askopenfilename(filetypes=[("图片", "*.png;*.jpg;*.jpeg;*.bmp")])
-        if path:
-            try: image = Image.open(path).copy()
-            except (OSError, ValueError) as exc: messagebox.showerror("无法读取图片", str(exc), parent=self); return
-            self.status.config(text="正在本地识别图片…"); threading.Thread(target=self.ocr_image, args=(image,), daemon=True).start()
-
     def add_event_text(self):
         text = self.input_box.get("1.0", "end").strip(); events = parse_event_text(text, self.selected_date, self.kind_values.get(self.kind_var.get(), "auto"))
         if not events: messagebox.showinfo("提示", "请输入事件内容或先粘贴截图。", parent=self); return
