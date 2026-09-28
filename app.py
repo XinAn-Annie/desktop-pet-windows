@@ -116,6 +116,29 @@ def configure_tesseract() -> str | None:
     return None
 
 
+def visible_app_processes() -> list[tuple[str, str, int, str]]:
+    """Return visible top-level Windows windows with their owning process details."""
+    if os.name != "nt" or not psutil:
+        return []
+    user32 = ctypes.windll.user32
+    enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    results = []
+    def collect(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd): return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0: return True
+        title = ctypes.create_unicode_buffer(length + 1); user32.GetWindowTextW(hwnd, title, length + 1)
+        pid = wintypes.DWORD(); user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        try:
+            process = psutil.Process(pid.value); info = process.memory_info()
+            results.append((title.value, process.name(), pid.value, f"{info.rss / 1024 / 1024:.1f} MB"))
+        except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+        return True
+    user32.EnumWindows(enum_proc(collect), 0)
+    results.sort(key=lambda item: item[0].lower())
+    return results
+
+
 def set_autostart(enabled: bool):
     if os.name != "nt":
         return
@@ -233,7 +256,7 @@ FirstRunDialog = SettingsDialog
 class Workbench(tk.Toplevel):
     def __init__(self, master: "DesktopPet"):
         super().__init__(master); self.title(APP_TITLE); self.geometry("980x680"); self.minsize(850, 560); self.transient(master)
-        self.events = master.events; self.selected_date = dt.date.today(); self.input_image = None; self._build(); self.bind_all("<Control-v>", self.on_paste, add="+"); self.refresh_calendar(); self.refresh_processes()
+        self.events = master.events; self.selected_date = dt.date.today(); self.input_image = None; self._build(); self.refresh_calendar(); self.refresh_processes(); self.after(4000, self.auto_refresh_processes)
 
     def _build(self):
         top = ttk.Frame(self, padding=10); top.pack(fill="x"); self.date_label = ttk.Label(top, font=("Microsoft YaHei UI", 14, "bold")); self.date_label.pack(side="left"); self.status = ttk.Label(top, text="截图 Ctrl+C 后，在输入框按 Ctrl+V"); self.status.pack(side="right"); self._update_date()
@@ -253,8 +276,8 @@ class Workbench(tk.Toplevel):
         controls = ttk.Frame(right); controls.pack(fill="x"); self.kind_var = tk.StringVar(value="自动识别"); self.kind_values = {"自动识别": "auto", "DDL": "ddl", "普通事件": "normal", "规律事件": "regular", "会议": "meeting"}; ttk.Combobox(controls, textvariable=self.kind_var, values=list(self.kind_values), state="readonly", width=10).pack(side="left"); ttk.Button(controls, text="解析并添加", command=self.add_event_text).pack(side="left", padx=5); ttk.Button(controls, text="编辑", command=self.edit_event).pack(side="left"); ttk.Button(controls, text="完成/恢复", command=self.toggle_done).pack(side="left", padx=5); ttk.Button(controls, text="删除选中", command=self.delete_event).pack(side="right")
 
     def _build_process_tab(self, parent):
-        columns = ("name", "pid", "memory"); self.process_tree = ttk.Treeview(parent, columns=columns, show="headings")
-        for col, title, width in (("name", "程序", 320), ("pid", "PID", 100), ("memory", "内存", 130)): self.process_tree.heading(col, text=title); self.process_tree.column(col, width=width)
+        columns = ("title", "name", "pid", "memory"); self.process_tree = ttk.Treeview(parent, columns=columns, show="headings")
+        for col, title, width in (("title", "打开的窗口", 350), ("name", "进程", 190), ("pid", "PID", 80), ("memory", "内存", 100)): self.process_tree.heading(col, text=title); self.process_tree.column(col, width=width)
         self.process_tree.pack(fill="both", expand=True); ttk.Button(parent, text="刷新当前程序", command=self.refresh_processes).pack(anchor="e", pady=6)
 
     def _update_date(self):
@@ -374,13 +397,15 @@ class Workbench(tk.Toplevel):
 
     def refresh_processes(self):
         for item in self.process_tree.get_children(): self.process_tree.delete(item)
-        if not psutil: self.process_tree.insert("", "end", values=("未安装 psutil", "-", "请运行 setup.ps1")); return
-        rows = []
-        for proc in psutil.process_iter(["name", "pid", "memory_info"]):
-            try:
-                info = proc.info; memory = info.get("memory_info"); rss = memory.rss / 1024 / 1024 if memory else 0; rows.append((rss, info.get("name") or "未知", info.get("pid"), f"{rss:.1f} MB"))
-            except (psutil.NoSuchProcess, psutil.AccessDenied): pass
-        for _, name, pid, memory in sorted(rows, reverse=True)[:80]: self.process_tree.insert("", "end", values=(name, pid, memory))
+        if not psutil: self.process_tree.insert("", "end", values=("未安装 psutil", "-", "-", "请运行 setup.ps1")); return
+        rows = visible_app_processes()
+        if not rows: self.process_tree.insert("", "end", values=("当前没有可见应用窗口", "", "", "")); return
+        for title, name, pid, memory in rows: self.process_tree.insert("", "end", values=(title, name, pid, memory))
+
+    def auto_refresh_processes(self):
+        if not self.winfo_exists(): return
+        if self.winfo_viewable(): self.refresh_processes()
+        self.after(4000, self.auto_refresh_processes)
 
 
 class DesktopPet(tk.Tk):
