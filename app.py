@@ -21,6 +21,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import urlparse
 from feed_monitor import fetch_latest
+from image_provider import generate_image
 
 try:
     from PIL import Image, ImageGrab, ImageTk
@@ -477,11 +478,82 @@ class DesktopPet(tk.Tk):
         c = self.canvas; c.create_oval(36, 25, 134, 115, fill="#f4b183", outline="#633b27", width=3); c.create_polygon(43, 43, 43, 10, 72, 34, fill="#f4b183", outline="#633b27"); c.create_polygon(127, 43, 127, 10, 98, 34, fill="#f4b183", outline="#633b27"); c.create_oval(61, 58, 69, 68, fill="#333"); c.create_oval(101, 58, 109, 68, fill="#333"); c.create_oval(82, 75, 92, 82, fill="#8b3d3d"); c.create_arc(70, 72, 104, 100, start=200, extent=140, style="arc", width=2); c.create_oval(52, 108, 118, 163, fill="#a9d18e", outline="#45633b", width=3); c.create_text(85, 178, text="点击打开工作台", fill="#333", font=("Microsoft YaHei UI", 9))
 
     def context_menu(self, event):
-        menu = tk.Menu(self, tearoff=0); menu.add_command(label="打开工作台", command=self.open_workbench); menu.add_command(label="上传图片桌宠形象", command=self.upload_avatar); menu.add_command(label="桌宠设置", command=self.open_settings); menu.add_separator(); menu.add_command(label="隐藏桌宠", command=self.withdraw); menu.add_command(label="显示桌宠", command=self.deiconify); menu.add_command(label="退出", command=self.destroy); menu.tk_popup(event.x_root, event.y_root)
+        menu = tk.Menu(self, tearoff=0); menu.add_command(label="打开工作台", command=self.open_workbench); menu.add_command(label="和桌宠聊聊", command=self.open_chat); menu.add_command(label="上传图片桌宠形象", command=self.upload_avatar); menu.add_command(label="生成宠物形象", command=self.open_avatar_generator); menu.add_command(label="桌宠设置", command=self.open_settings); menu.add_separator(); menu.add_command(label="隐藏桌宠", command=self.withdraw); menu.add_command(label="显示桌宠", command=self.deiconify); menu.add_command(label="退出", command=self.destroy); menu.tk_popup(event.x_root, event.y_root)
 
     def upload_avatar(self):
         path = filedialog.askopenfilename(filetypes=[("图片", "*.png;*.jpg;*.jpeg;*.webp;*.bmp")])
         if path: self.settings["avatar"] = path; save_settings(self.settings); self.draw_pet()
+
+    def open_chat(self):
+        dialog = tk.Toplevel(self); dialog.title("和桌宠聊聊"); dialog.geometry("390x420"); dialog.transient(self)
+        history = tk.Text(dialog, wrap="word", state="disabled", padx=10, pady=8); history.pack(fill="both", expand=True)
+        row = ttk.Frame(dialog, padding=8); row.pack(fill="x"); entry = ttk.Entry(row); entry.pack(side="left", fill="x", expand=True)
+        def reply(_event=None):
+            prompt = entry.get().strip()
+            if not prompt: return
+            low = prompt.lower(); today = dt.date.today().isoformat(); todays = [event for event in self.events if event["date"] == today and not event.get("done")]
+            if any(word in low for word in ("你好", "嗨", "hello", "hi")): answer = "你好呀，我在这里陪你。要不要看看今天的安排？"
+            elif any(word in low for word in ("今天", "日程", "安排", "待办", "ddl")):
+                answer = "今天还没有未完成的安排。" if not todays else "今天的安排：" + "；".join(f"{e.get('start', '全天')} {e['title']}" for e in sorted(todays, key=lambda e: e.get("start", ""))[:5])
+            elif any(word in low for word in ("累", "休息", "困")): answer = "辛苦啦。起来伸展一下，喝口水再继续吧。"
+            else: answer = "我听到啦！我现在可以陪你聊聊，也能帮你打开日历整理安排。"
+            history.configure(state="normal"); history.insert("end", f"你：{prompt}\n桌宠：{answer}\n\n"); history.configure(state="disabled"); history.see("end"); entry.delete(0, "end")
+        ttk.Button(row, text="发送", command=reply).pack(side="left", padx=(6, 0)); entry.bind("<Return>", reply); entry.focus_set()
+
+    def open_avatar_generator(self):
+        try:
+            import keyring
+            saved_key = keyring.get_password("desktop-pet-windows", "image-api-key") or ""
+        except Exception:
+            keyring = None; saved_key = ""
+        dialog = tk.Toplevel(self); dialog.title("生成桌宠形象"); dialog.geometry("500x390"); dialog.transient(self); dialog.grab_set()
+        ttk.Label(dialog, text="使用 OpenAI-compatible Images API 生成一张宠物形象。API 密钥仅保存在 Windows 凭据管理器中。", wraplength=460).pack(anchor="w", padx=14, pady=(14, 8))
+        form = ttk.Frame(dialog, padding=8); form.pack(fill="both", expand=True); fields = {}
+        for row, (label, name, default, secret) in enumerate((
+            ("API 地址", "endpoint", self.settings.get("image_api_base", ""), False),
+            ("图片模型", "model", self.settings.get("image_model", ""), False),
+            ("API 密钥", "key", saved_key, True),
+        )):
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", pady=6); fields[name] = tk.StringVar(value=default); ttk.Entry(form, textvariable=fields[name], width=48, show="*" if secret else "").grid(row=row, column=1, sticky="ew", pady=6)
+        ttk.Label(form, text="形象描述",).grid(row=3, column=0, sticky="nw", pady=6); prompt = tk.Text(form, height=5, wrap="word"); prompt.grid(row=3, column=1, sticky="ew", pady=6); prompt.insert("1.0", "一只可爱、友善、适合做桌面宠物的原创小动物，单体居中，简洁背景")
+        form.columnconfigure(1, weight=1); buttons = ttk.Frame(dialog, padding=(14, 4, 14, 14)); buttons.pack(fill="x")
+        generate_button = ttk.Button(buttons, text="生成", command=lambda: submit()); generate_button.pack(side="right")
+        def submit():
+            endpoint, model, api_key, description = fields["endpoint"].get().strip(), fields["model"].get().strip(), fields["key"].get().strip(), prompt.get("1.0", "end").strip()
+            if not endpoint.startswith(("https://", "http://")) or not model or not api_key or not description:
+                messagebox.showwarning("请填写完整", "需要 API 地址、模型名称、API 密钥和形象描述。", parent=dialog); return
+            if keyring is None:
+                messagebox.showerror("凭据管理器不可用", "无法使用系统凭据管理器，请安装 requirements.txt 中的依赖后重启。", parent=dialog); return
+            try: keyring.set_password("desktop-pet-windows", "image-api-key", api_key)
+            except Exception as exc: messagebox.showerror("密钥保存失败", str(exc), parent=dialog); return
+            self.settings["image_api_base"] = endpoint; self.settings["image_model"] = model; save_settings(self.settings); generate_button.configure(state="disabled", text="生成中…")
+            threading.Thread(target=self.generate_avatar_thread, args=(endpoint, model, api_key, description, dialog), daemon=True).start()
+        ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right", padx=8)
+
+    def generate_avatar_thread(self, endpoint, model, api_key, prompt, dialog):
+        try: image_data, error = generate_image(endpoint, model, api_key, prompt), None
+        except Exception as exc: image_data, error = None, str(exc)
+        try: self.after(0, lambda: self.finish_avatar_generation(image_data, error, dialog))
+        except tk.TclError: pass
+
+    def finish_avatar_generation(self, image_data, error, dialog):
+        if not dialog.winfo_exists(): return
+        if error:
+            messagebox.showerror("生成失败", error[:1200], parent=dialog)
+            for child in dialog.winfo_children():
+                for button in child.winfo_children():
+                    if isinstance(button, ttk.Button) and button.cget("text") == "生成中…": button.configure(state="normal", text="生成")
+            return
+        avatar_dir = APP_DIR / "avatars"; avatar_dir.mkdir(parents=True, exist_ok=True); path = avatar_dir / f"generated_{dt.datetime.now():%Y%m%d_%H%M%S}.png"
+        try:
+            path.write_bytes(image_data)
+            if Image:
+                with Image.open(path) as image: image.verify()
+        except Exception as exc:
+            try: path.unlink()
+            except OSError: pass
+            messagebox.showerror("图片无效", str(exc), parent=dialog); return
+        self.settings["avatar"] = str(path); save_settings(self.settings); self.draw_pet(); dialog.destroy(); messagebox.showinfo("完成", "新形象已应用到桌宠。", parent=self)
 
     def open_workbench(self):
         self.deiconify()
