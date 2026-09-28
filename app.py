@@ -286,7 +286,7 @@ FirstRunDialog = SettingsDialog
 
 class Workbench(tk.Toplevel):
     def __init__(self, master: "DesktopPet"):
-        super().__init__(master); self.title(APP_TITLE); self.transient(master)
+        super().__init__(master); self.title(APP_TITLE)
         area = wintypes.RECT()
         if os.name == "nt" and ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(area), 0):
             left, top, screen_w, screen_h = area.left, area.top, area.right - area.left, area.bottom - area.top
@@ -304,6 +304,20 @@ class Workbench(tk.Toplevel):
         calendar_tab = ttk.Frame(notebook, padding=8); notebook.add(calendar_tab, text="日历与 DDL"); self._build_calendar_tab(calendar_tab)
         process_tab = ttk.Frame(notebook, padding=8); notebook.add(process_tab, text="运行中的程序"); self._build_process_tab(process_tab)
         web_tab = ttk.Frame(notebook, padding=8); notebook.add(web_tab, text="网址提醒"); self._build_feeds_tab(web_tab)
+        settings_tab = ttk.Frame(notebook, padding=20); notebook.add(settings_tab, text="设置"); self._build_settings_tab(settings_tab)
+
+    def _build_settings_tab(self, parent):
+        ttk.Label(parent, text="桌宠设置", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", pady=(0, 18))
+        actions = (
+            ("上传图片桌宠形象", self.master.upload_avatar),
+            ("桌宠启动设置", self.master.open_settings),
+            ("隐藏桌宠", self.master.withdraw),
+            ("显示桌宠", self.master.deiconify),
+            ("退出", self.master.destroy),
+        )
+        for label, command in actions:
+            ttk.Button(parent, text=label, command=command, width=26).pack(anchor="w", pady=7, ipady=5)
+        ttk.Label(parent, text="隐藏桌宠后，工作台仍会保留；退出会关闭桌宠和工作台。", foreground="#666").pack(anchor="w", pady=(18, 0))
 
     def _build_feeds_tab(self, parent):
         ttk.Label(parent, text="订阅 RSS/Atom；普通网页会尝试检测公开订阅或检查页面文字变化。摘要在本机生成。", wraplength=820).pack(anchor="w", pady=(0, 8))
