@@ -416,7 +416,7 @@ class DesktopPet(tk.Tk):
         except tk.TclError: pass
         position = settings.get("position", [80, 80]); self.geometry(f"170x190+{int(position[0])}+{int(position[1])}"); self.canvas = tk.Canvas(self, width=170, height=190, bg="#ff00ff", highlightthickness=0); self.canvas.pack(); self.draw_pet()
         self.canvas.bind("<ButtonPress-1>", self.begin_drag); self.canvas.bind("<B1-Motion>", self.drag_pet); self.canvas.bind("<ButtonRelease-1>", self.end_drag); self.canvas.bind("<Button-3>", self.context_menu); self.bind("<Escape>", lambda _e: self.destroy()); self.protocol("WM_DELETE_WINDOW", self.destroy); self.after(100, self.poll_hotkey)
-        self.tray = None; self.start_tray()
+        self.tray = None; self.notified = set(); self.start_tray(); self.after(5000, self.check_event_reminders)
 
     def draw_pet(self):
         self.canvas.delete("all")
@@ -492,6 +492,26 @@ class DesktopPet(tk.Tk):
     def toggle_pet(self):
         if self.state() == "withdrawn": self.deiconify()
         else: self.withdraw()
+
+    def check_event_reminders(self):
+        if not self.winfo_exists(): return
+        now = dt.datetime.now().replace(second=0, microsecond=0)
+        for event in self.events:
+            if event.get("done"): continue
+            clock = event.get("start", event.get("time", "全天")); clock = "09:00" if clock == "全天" and event.get("kind") == "ddl" else clock
+            if clock == "全天": continue
+            try: due = dt.datetime.combine(dt.date.fromisoformat(event["date"]), dt.time.fromisoformat(clock))
+            except (ValueError, KeyError): continue
+            offsets = (60, 0) if event.get("kind") == "ddl" else (0,)
+            for offset in offsets:
+                reminder_at = due - dt.timedelta(minutes=offset); key = (event["date"], clock, event["title"], offset)
+                if key not in self.notified and now == reminder_at:
+                    self.notified.add(key)
+                    if self.tray:
+                        label = "DDL 即将截止" if offset else ("DDL 到期" if event.get("kind") == "ddl" else "日程提醒")
+                        try: self.tray.notify(f"{event['title']} · {due.strftime('%H:%M')}", title=label)
+                        except Exception: pass
+        self.after(30_000, self.check_event_reminders)
 
 
 def main():
