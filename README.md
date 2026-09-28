@@ -9,16 +9,11 @@
 5. 程序从剪贴板读取图片，在本地 OCR，然后把文字填入输入框。
 6. 选择事件类型后点击“解析并添加”。
 
-首次运行会询问：
-
-- 是否开机自启
-- 启动快捷键，默认 `win+alt+o`
-
-桌宠右键菜单支持打开工作台、隐藏/显示桌宠、上传图片桌宠形象和退出。
+首次运行会询问登录后的显示方式和全局快捷键，默认 `win+alt+o`。桌宠右键菜单支持打开工作台、隐藏/显示桌宠、上传图片桌宠形象和设置。
 
 ## 安装
 
-需要 Windows、Python 3.10+ 和 Tesseract OCR。安装脚本会优先寻找可用的 `python.exe`，不会依赖可能失效的 `py.exe`。PowerShell 中运行：
+需要 Windows、Python 3.10+。安装脚本会优先寻找可用的 `python.exe`，不会依赖可能失效的 `py.exe`；如果缺少 Tesseract，会询问是否通过 winget 安装。PowerShell 中运行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -37,6 +32,14 @@ Tesseract 的中文识别需要安装 `chi_sim` 语言包。若 Tesseract 不在
 ```powershell
 $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
 ```
+
+也可以在 PowerShell 手动安装 Tesseract：
+
+```powershell
+winget install -e --id UB-Mannheim.TesseractOCR
+```
+
+安装器中请勾选 English 和 Chinese Simplified (`chi_sim`) 语言数据。程序会自动检查引擎和语言包；缺少引擎时会在 OCR 输入区说明修复命令，缺少中文包时会降级到英文识别并提示。
 
 ## 当前完成
 

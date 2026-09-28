@@ -12,6 +12,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import tkinter as tk
@@ -93,6 +94,26 @@ def add_minutes(time_text: str, amount: int) -> str:
         return f"{total // 60:02d}:{total % 60:02d}"
     except (ValueError, AttributeError):
         return "全天"
+
+
+def configure_tesseract() -> str | None:
+    if not pytesseract:
+        return None
+    candidates = [
+        os.environ.get("TESSERACT_CMD", ""), shutil.which("tesseract") or "",
+        str(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Tesseract-OCR" / "tesseract.exe"),
+        str(Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Tesseract-OCR" / "tesseract.exe"),
+        str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Tesseract-OCR" / "tesseract.exe"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            try:
+                pytesseract.get_tesseract_version()
+                return candidate
+            except (pytesseract.TesseractNotFoundError, OSError):
+                continue
+    return None
 
 
 def set_autostart(enabled: bool):
@@ -285,6 +306,9 @@ class Workbench(tk.Toplevel):
         if ImageGrab:
             try: image = ImageGrab.grabclipboard()
             except Exception: image = None
+            if isinstance(image, list) and image and Image:
+                try: image = Image.open(image[0]).copy()
+                except (OSError, ValueError): image = None
             if image is not None and hasattr(image, "size"):
                 self.input_image = image; self.status.config(text="已收到截图，正在本地 OCR…"); threading.Thread(target=self.ocr_image, args=(image,), daemon=True).start(); return "break"
         try: text = self.clipboard_get()
@@ -293,10 +317,21 @@ class Workbench(tk.Toplevel):
         return "break"
 
     def ocr_image(self, image):
-        if not pytesseract: result = "请先安装 pytesseract 和 Tesseract OCR。"
+        if not pytesseract:
+            result = "OCR 组件未安装。请在项目目录运行 setup.ps1。"
+        elif not configure_tesseract():
+            result = "未检测到 Tesseract OCR 引擎。请在 PowerShell 执行：winget install -e --id UB-Mannheim.TesseractOCR；安装时选择 Chinese Simplified (chi_sim) 语言数据，然后重启桌宠。"
         else:
-            try: result = pytesseract.image_to_string(image, lang="chi_sim+eng")
-            except Exception as exc: result = f"OCR 失败：{exc}"
+            try:
+                languages = set(pytesseract.get_languages(config=""))
+                if "chi_sim" in languages:
+                    result = pytesseract.image_to_string(image, lang="chi_sim+eng")
+                elif "eng" in languages:
+                    result = "[提示：未找到 chi_sim 中文语言数据，以下按英文模型识别；请安装中文语言包后重启桌宠。]\n\n" + pytesseract.image_to_string(image, lang="eng")
+                else:
+                    result = "Tesseract 已安装，但缺少 eng 和 chi_sim 语言数据。请安装英文及简体中文语言包。"
+            except Exception as exc:
+                result = f"OCR 失败：{exc}"
         self.after(0, lambda: self.finish_ocr(result))
 
     def finish_ocr(self, text): self.input_box.delete("1.0", "end"); self.input_box.insert("1.0", text.strip()); self.status.config(text="OCR 完成，请确认后解析")
@@ -304,7 +339,10 @@ class Workbench(tk.Toplevel):
     def choose_schedule_image(self):
         if not Image: messagebox.showerror("缺少 Pillow", "请先运行 setup.ps1。", parent=self); return
         path = filedialog.askopenfilename(filetypes=[("图片", "*.png;*.jpg;*.jpeg;*.bmp")])
-        if path: self.status.config(text="正在识别课表图片…"); threading.Thread(target=self.ocr_image, args=(Image.open(path),), daemon=True).start()
+        if path:
+            try: image = Image.open(path).copy()
+            except (OSError, ValueError) as exc: messagebox.showerror("无法读取图片", str(exc), parent=self); return
+            self.status.config(text="正在本地识别图片…"); threading.Thread(target=self.ocr_image, args=(image,), daemon=True).start()
 
     def add_event_text(self):
         text = self.input_box.get("1.0", "end").strip(); events = parse_event_text(text, self.selected_date, self.kind_values.get(self.kind_var.get(), "auto"))

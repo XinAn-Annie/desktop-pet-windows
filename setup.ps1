@@ -34,5 +34,17 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to create virtual environment." }
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Write-Host "Dependencies installed."
-Write-Host "Install Tesseract OCR separately, including chi_sim and eng language packs."
+$tesseractCandidates = @("$env:ProgramFiles\Tesseract-OCR\tesseract.exe", "${env:ProgramFiles(x86)}\Tesseract-OCR\tesseract.exe")
+$tesseractFound = (Get-Command tesseract.exe -ErrorAction SilentlyContinue) -or ($tesseractCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+if (-not $tesseractFound) {
+    $answer = Read-Host "Tesseract OCR was not found. Install it with winget now? [y/N]"
+    if ($answer -match '^[Yy]$') {
+        if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { Write-Warning "winget is unavailable. Install Tesseract manually, then rerun the app." }
+        else {
+            winget install --exact --id UB-Mannheim.TesseractOCR
+            if ($LASTEXITCODE -ne 0) { Write-Warning "Tesseract installation did not complete. You can retry with: winget install -e --id UB-Mannheim.TesseractOCR" }
+            else { Write-Host "In the installer, include English and Chinese Simplified (chi_sim) language data." }
+        }
+    } else { Write-Host "OCR will need Tesseract later. Install with: winget install -e --id UB-Mannheim.TesseractOCR" }
+}
 Write-Host "Run: .\.venv\Scripts\python.exe app.py"
