@@ -68,7 +68,15 @@ def save_settings(settings: dict):
 def load_events() -> list[dict]:
     try:
         value = json.loads(EVENTS_FILE.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else []
+        if not isinstance(value, list):
+            return []
+        for event in value:
+            event.setdefault("start", event.get("time", "全天"))
+            if event["start"] == "全天":
+                event.setdefault("end", "全天")
+            else:
+                event.setdefault("end", add_minutes(event["start"], 60))
+        return value
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return []
 
@@ -76,6 +84,15 @@ def load_events() -> list[dict]:
 def save_events(events: list[dict]):
     APP_DIR.mkdir(parents=True, exist_ok=True)
     EVENTS_FILE.write_text(json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def add_minutes(time_text: str, amount: int) -> str:
+    try:
+        hour, minute = map(int, time_text.split(":"))
+        total = min(23 * 60 + 59, hour * 60 + minute + amount)
+        return f"{total // 60:02d}:{total % 60:02d}"
+    except (ValueError, AttributeError):
+        return "全天"
 
 
 def set_autostart(enabled: bool):
@@ -110,26 +127,63 @@ def parse_hotkey(value: str) -> tuple[int, int] | None:
 
 
 def parse_event_text(text: str, selected: dt.date, kind: str) -> list[dict]:
-    """Parse expressions such as 9月10-29每天上午2点上课."""
+    """Parse Chinese dates, time ranges and daily/weekly recurrence expressions."""
     clean = " ".join(x.strip() for x in text.splitlines() if x.strip())
     if not clean:
         return []
-    time_match = re.search(r"(上午|下午|晚上|早上)?\s*(\d{1,2})(?::|点)(\d{0,2})", clean)
-    time_text = ""
-    if time_match:
-        hour = int(time_match.group(2)); minute = int(time_match.group(3) or 0)
-        if time_match.group(1) in ("下午", "晚上") and hour < 12: hour += 12
-        time_text = f"{hour:02d}:{minute:02d}"
-    title = re.sub(r"\d{1,2}月\d{1,2}(?:[-~至]\d{1,2})?日?", "", clean)
-    title = re.sub(r"(?:每天|每周[一二三四五六日天]?|上午|下午|晚上|早上)\s*\d{0,2}(?::|点)?\d{0,2}", "", title)
-    title = re.sub(r"\s+", " ", title).strip(" ：:，,") or "未命名事件"
-    range_match = re.search(r"(\d{1,2})月(\d{1,2})(?:[-~至](\d{1,2}))?", clean)
-    dates = [selected]
+    def parse_clock(match):
+        hour, minute = int(match.group("hour")), int(match.group("minute") or 0)
+        period = match.group("period") or ""
+        if period in ("下午", "晚上") and hour < 12: hour += 12
+        if period in ("凌晨", "早上", "上午") and hour == 12: hour = 0
+        return f"{min(hour, 23):02d}:{min(minute, 59):02d}"
+
+    time_pattern = r"(?P<period>凌晨|早上|上午|中午|下午|晚上)?\s*(?P<hour>\d{1,2})(?::(?P<minute>\d{2})|点(?P<minute_cn>\d{1,2})?分?)"
+    time_matches = list(re.finditer(time_pattern, clean))
+    def clock_value(match):
+        minute = match.group("minute") or match.group("minute_cn") or "0"
+        hour = int(match.group("hour")); period = match.group("period") or ""
+        if period in ("下午", "晚上") and hour < 12: hour += 12
+        if period in ("凌晨", "早上", "上午") and hour == 12: hour = 0
+        if period == "中午" and hour < 11: hour += 12
+        return f"{min(hour, 23):02d}:{min(int(minute), 59):02d}"
+    start_time = clock_value(time_matches[0]) if time_matches else "全天"
+    end_time = clock_value(time_matches[1]) if len(time_matches) > 1 else add_minutes(start_time, 60)
+    if len(time_matches) > 1 and not time_matches[1].group("period") and time_matches[0].group("period") in ("下午", "晚上") and end_time[:2] != "12":
+        end_time = f"{min(int(end_time[:2]) + 12, 23):02d}:{end_time[3:]}"
+    if start_time == end_time and start_time != "全天": end_time = add_minutes(start_time, 60)
+
+    range_match = re.search(r"(?:(20\d{2})年)?(\d{1,2})月(\d{1,2})(?:日)?(?:[-~至](\d{1,2})(?:日)?)?", clean)
+    date_match = re.search(r"(今天|明天|后天)", clean)
+    dates = []
     if range_match:
-        month, start = int(range_match.group(1)), int(range_match.group(2)); end = int(range_match.group(3) or start)
-        year = selected.year
-        dates = [dt.date(year, month, day) for day in range(start, end + 1) if day <= calendar.monthrange(year, month)[1]]
-    return [{"date": value.isoformat(), "time": time_text or "全天", "title": title, "kind": kind} for value in dates]
+        year = int(range_match.group(1) or selected.year); month, start = int(range_match.group(2)), int(range_match.group(3)); end = int(range_match.group(4) or start)
+        try: dates = [dt.date(year, month, day) for day in range(start, end + 1)]
+        except ValueError: return []
+    elif date_match:
+        offset = {"今天": 0, "明天": 1, "后天": 2}[date_match.group(1)]; dates = [selected + dt.timedelta(days=offset)]
+    else:
+        weekdays = re.search(r"每周([一二三四五六日天]+)", clean)
+        if weekdays:
+            weekday_map = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+            targets = {weekday_map[x] for x in weekdays.group(1)}
+            dates = [selected + dt.timedelta(days=offset) for offset in range(366) if (selected + dt.timedelta(days=offset)).weekday() in targets]
+        elif "每天" in clean or "每日" in clean:
+            dates = [selected + dt.timedelta(days=offset) for offset in range(30)]
+        else:
+            dates = [selected]
+
+    title = re.sub(r"(?:(?:20\d{2})年)?\d{1,2}月\d{1,2}(?:日)?(?:[-~至]\d{1,2}(?:日)?)?", "", clean)
+    title = re.sub(r"今天|明天|后天|每天|每日|每周[一二三四五六日天]+", "", title)
+    title = re.sub(time_pattern, "", title)
+    title = re.sub(r"\s+", " ", title).strip(" ：:，,")
+    title = re.sub(r"^(?:到|至)\s*|\s+(?:到|至)\s+", "", title) or "未命名事件"
+    if kind == "auto":
+        if re.search(r"DDL|deadline|截止|交作业|到期", clean, re.I): kind = "ddl"
+        elif re.search(r"开会|会议|面试|组会", clean): kind = "meeting"
+        elif "每天" in clean or "每周" in clean or "每日" in clean: kind = "regular"
+        else: kind = "normal"
+    return [{"date": value.isoformat(), "start": start_time, "end": end_time, "time": start_time, "title": title, "kind": kind} for value in dates]
 
 
 class SettingsDialog(tk.Toplevel):
@@ -172,9 +226,10 @@ class Workbench(tk.Toplevel):
         ttk.Button(nav, text="‹", width=3, command=lambda: self.shift_month(-1)).pack(side="left"); self.month_label = ttk.Label(nav, width=16, anchor="center", font=("Microsoft YaHei UI", 11, "bold")); self.month_label.pack(side="left"); ttk.Button(nav, text="›", width=3, command=lambda: self.shift_month(1)).pack(side="left"); ttk.Button(nav, text="今天", command=lambda: self.select_date(dt.date.today())).pack(side="right")
         self.calendar_frame = ttk.Frame(left); self.calendar_frame.pack(fill="x", pady=8); legend = ttk.Frame(left); legend.pack(fill="x", pady=(0, 8))
         for kind, label in EVENT_LABELS.items(): tk.Label(legend, text=f"  {label}  ", bg=EVENT_COLORS[kind]).pack(side="left", padx=2)
-        right = ttk.LabelFrame(body, text="当天安排", padding=8); right.pack(side="right", fill="both", expand=True, padx=(14, 0)); self.day_title = ttk.Label(right, font=("Microsoft YaHei UI", 11, "bold")); self.day_title.pack(anchor="w"); self.schedule = tk.Listbox(right, height=15, font=("Microsoft YaHei UI", 10)); self.schedule.pack(fill="both", expand=True, pady=6)
+        right = ttk.LabelFrame(body, text="当天时间安排", padding=8); right.pack(side="right", fill="both", expand=True, padx=(14, 0)); self.day_title = ttk.Label(right, font=("Microsoft YaHei UI", 11, "bold")); self.day_title.pack(anchor="w")
+        timeline_frame = ttk.Frame(right); timeline_frame.pack(fill="both", expand=True, pady=6); self.timeline = tk.Canvas(timeline_frame, height=300, background="white", highlightthickness=0); timeline_scroll = ttk.Scrollbar(timeline_frame, orient="vertical", command=self.timeline.yview); self.timeline.configure(yscrollcommand=timeline_scroll.set); self.timeline.pack(side="left", fill="both", expand=True); timeline_scroll.pack(side="right", fill="y"); self.timeline.bind("<Configure>", lambda _e: self.refresh_timeline())
         ttk.Label(right, text="添加文字或规律事件，例如：9月10-29每天上午2点上课").pack(anchor="w"); self.input_box = tk.Text(right, height=4, wrap="word"); self.input_box.pack(fill="x", pady=4); self.input_box.bind("<Control-v>", self.on_paste)
-        controls = ttk.Frame(right); controls.pack(fill="x"); self.kind_var = tk.StringVar(value="normal"); ttk.Combobox(controls, textvariable=self.kind_var, values=list(EVENT_LABELS), state="readonly", width=9).pack(side="left"); ttk.Button(controls, text="解析并添加", command=self.add_event_text).pack(side="left", padx=6); ttk.Button(controls, text="上传课表图片", command=self.choose_schedule_image).pack(side="left"); ttk.Button(controls, text="删除选中", command=self.delete_event).pack(side="right")
+        controls = ttk.Frame(right); controls.pack(fill="x"); self.kind_var = tk.StringVar(value="自动识别"); self.kind_values = {"自动识别": "auto", "DDL": "ddl", "普通事件": "normal", "规律事件": "regular", "会议": "meeting"}; ttk.Combobox(controls, textvariable=self.kind_var, values=list(self.kind_values), state="readonly", width=10).pack(side="left"); ttk.Button(controls, text="解析并添加", command=self.add_event_text).pack(side="left", padx=5); ttk.Button(controls, text="编辑", command=self.edit_event).pack(side="left"); ttk.Button(controls, text="完成/恢复", command=self.toggle_done).pack(side="left", padx=5); ttk.Button(controls, text="删除选中", command=self.delete_event).pack(side="right")
 
     def _build_process_tab(self, parent):
         columns = ("name", "pid", "memory"); self.process_tree = ttk.Treeview(parent, columns=columns, show="headings")
@@ -200,10 +255,31 @@ class Workbench(tk.Toplevel):
         for row, week in enumerate(calendar.monthcalendar(year, month), 1):
             for col, day in enumerate(week):
                 if not day: ttk.Label(self.calendar_frame, text="").grid(row=row, column=col, padx=2, pady=2); continue
-                value = dt.date(year, month, day); events = [x for x in self.events if x["date"] == value.isoformat()]; bg = EVENT_COLORS[events[0]["kind"]] if events else ("#e6f4ea" if value == dt.date.today() else "white")
+                value = dt.date(year, month, day); events = [x for x in self.events if x["date"] == value.isoformat()]; priority = {"ddl": 0, "meeting": 1, "regular": 2, "normal": 3}; events.sort(key=lambda x: priority.get(x.get("kind"), 4)); bg = EVENT_COLORS[events[0]["kind"]] if events else ("#e6f4ea" if value == dt.date.today() else "white")
                 tk.Button(self.calendar_frame, text=str(day), bg=bg, relief="sunken" if value == self.selected_date else "raised", command=lambda v=value: self.select_date(v)).grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
-        self.day_title.config(text=f"{self.selected_date.isoformat()} 的安排"); self.schedule.delete(0, "end")
-        for event in sorted([x for x in self.events if x["date"] == self.selected_date.isoformat()], key=lambda x: x["time"]): self.schedule.insert("end", f"{event['time']}  [{EVENT_LABELS[event['kind']]}] {event['title']}")
+        self.day_title.config(text=f"{self.selected_date.isoformat()} 的安排"); self.selected_event = None; self.refresh_timeline()
+
+    def refresh_timeline(self):
+        if not hasattr(self, "timeline") or not self.timeline.winfo_exists(): return
+        canvas = self.timeline; canvas.delete("all"); width = max(canvas.winfo_width(), 340); hour_height = 46; label_width = 48; canvas.configure(scrollregion=(0, 0, width, hour_height * 24))
+        for hour in range(25):
+            y = hour * hour_height; canvas.create_text(4, y + 2, anchor="nw", text=f"{hour:02d}:00", fill="#666", font=("Microsoft YaHei UI", 8)); canvas.create_line(label_width, y, width, y, fill="#e7e7e7")
+        values = sorted([x for x in self.events if x["date"] == self.selected_date.isoformat()], key=lambda x: x.get("start", x.get("time", "全天")))
+        for event in values:
+            start, end = event.get("start", event.get("time", "全天")), event.get("end", "全天")
+            if start == "全天": y1, y2 = 1, 24
+            else:
+                try:
+                    sh, sm = map(int, start.split(":")); eh, em = map(int, end.split(":")); y1 = sh * hour_height + sm * hour_height / 60; y2 = eh * hour_height + em * hour_height / 60
+                except (ValueError, AttributeError): continue
+                if y2 <= y1: y2 = y1 + hour_height
+            kind = event.get("kind", "normal"); color = EVENT_COLORS.get(kind, EVENT_COLORS["normal"]); selected = event is getattr(self, "selected_event", None); tag = f"event_{id(event)}"
+            canvas.create_rectangle(label_width + 3, y1 + 2, width - 4, max(y2 - 2, y1 + 22), fill=color, outline="#555" if selected else color, width=2 if selected else 1, tags=(tag,))
+            prefix = "✓ " if event.get("done") else ""; when = "全天" if start == "全天" else f"{start}-{end}"
+            canvas.create_text(label_width + 9, y1 + 5, anchor="nw", text=f"{when} [{EVENT_LABELS.get(kind, '普通')}] {prefix}{event['title']}", fill="#333", font=("Microsoft YaHei UI", 9), tags=(tag,))
+            canvas.tag_bind(tag, "<Button-1>", lambda _e, item=event: self.select_event(item)); canvas.tag_bind(tag, "<Double-Button-1>", lambda _e, item=event: self.edit_event(item))
+
+    def select_event(self, event): self.selected_event = event; self.refresh_timeline()
 
     def on_paste(self, _event=None):
         if ImageGrab:
@@ -231,14 +307,32 @@ class Workbench(tk.Toplevel):
         if path: self.status.config(text="正在识别课表图片…"); threading.Thread(target=self.ocr_image, args=(Image.open(path),), daemon=True).start()
 
     def add_event_text(self):
-        text = self.input_box.get("1.0", "end").strip(); events = parse_event_text(text, self.selected_date, self.kind_var.get())
+        text = self.input_box.get("1.0", "end").strip(); events = parse_event_text(text, self.selected_date, self.kind_values.get(self.kind_var.get(), "auto"))
         if not events: messagebox.showinfo("提示", "请输入事件内容或先粘贴截图。", parent=self); return
         self.events.extend(events); save_events(self.events); self.input_box.delete("1.0", "end"); self.refresh_calendar(); self.status.config(text=f"已添加 {len(events)} 个事件")
 
     def delete_event(self):
-        index = self.schedule.curselection()
-        if not index: return
-        visible = sorted([x for x in self.events if x["date"] == self.selected_date.isoformat()], key=lambda x: x["time"]); self.events.remove(visible[index[0]]); save_events(self.events); self.refresh_calendar()
+        if not getattr(self, "selected_event", None): return
+        self.events.remove(self.selected_event); self.selected_event = None; save_events(self.events); self.refresh_calendar()
+
+    def toggle_done(self):
+        if not getattr(self, "selected_event", None): return
+        self.selected_event["done"] = not self.selected_event.get("done", False); save_events(self.events); self.refresh_calendar()
+
+    def edit_event(self, event=None):
+        event = event or getattr(self, "selected_event", None)
+        if not event: return
+        dialog = tk.Toplevel(self); dialog.title("编辑日程"); dialog.transient(self); dialog.grab_set(); fields = {}
+        for row, (label, key, default) in enumerate((("事项", "title", event["title"]), ("开始时间 HH:MM", "start", event.get("start", "全天")), ("结束时间 HH:MM", "end", event.get("end", "全天")))):
+            ttk.Label(dialog, text=label).grid(row=row, column=0, padx=10, pady=6, sticky="w"); fields[key] = tk.StringVar(value=default); ttk.Entry(dialog, textvariable=fields[key], width=28).grid(row=row, column=1, padx=10, pady=6)
+        kind_names = {value: key for key, value in EVENT_LABELS.items()}; kind_names["ddl"] = "DDL"; kind_names["normal"] = "普通"; kind_names["regular"] = "规律"; kind_names["meeting"] = "会议"
+        kind_var = tk.StringVar(value=kind_names.get(event.get("kind"), "普通")); ttk.Label(dialog, text="类型").grid(row=3, column=0, padx=10, pady=6, sticky="w"); ttk.Combobox(dialog, textvariable=kind_var, values=("DDL", "普通", "规律", "会议"), state="readonly").grid(row=3, column=1, padx=10, pady=6, sticky="ew")
+        def save_edit():
+            start, end = fields["start"].get().strip(), fields["end"].get().strip()
+            if start != "全天" and (not re.fullmatch(r"\d{2}:\d{2}", start) or not re.fullmatch(r"\d{2}:\d{2}", end)):
+                messagebox.showwarning("时间格式", "请输入 24 小时制时间，例如 09:30。", parent=dialog); return
+            event.update({"title": fields["title"].get().strip(), "start": start, "end": end, "time": start, "kind": {"DDL": "ddl", "普通": "normal", "规律": "regular", "会议": "meeting"}[kind_var.get()]}); save_events(self.events); dialog.destroy(); self.refresh_calendar()
+        ttk.Button(dialog, text="保存", command=save_edit).grid(row=4, column=1, pady=10, sticky="e")
 
     def refresh_processes(self):
         for item in self.process_tree.get_children(): self.process_tree.delete(item)
