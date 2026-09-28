@@ -24,6 +24,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import urlparse
 from feed_monitor import fetch_latest
+from preferences import PreferencesPanel, local_now, tags, foreground, enable_dpi, tr, translate_widgets
 
 try:
     from PIL import Image, ImageGrab, ImageTk
@@ -56,6 +57,12 @@ STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 CONTROL_PORT = 48761
 EVENT_COLORS = {"ddl": "#ffd6d6", "normal": "#fff1b8", "regular": "#cfe3ff", "meeting": "#ffd1e3"}
 EVENT_LABELS = {"ddl": "DDL", "normal": "普通", "regular": "规律", "meeting": "会议"}
+
+
+def apply_tags(settings):
+    configured = tags(settings)
+    EVENT_COLORS.clear(); EVENT_COLORS.update({key: value['color'] for key, value in configured.items()})
+    EVENT_LABELS.clear(); EVENT_LABELS.update({key: (value['name'] if key in settings.get('tags', {}) else tr(value['name'], settings)) for key, value in configured.items()})
 
 
 def load_settings() -> dict:
@@ -271,6 +278,7 @@ class SettingsDialog(tk.Toplevel):
         row = ttk.Frame(self); row.pack(fill="x", padx=24); ttk.Label(row, text="唤醒快捷键：").pack(side="left"); ttk.Entry(row, textvariable=self.hotkey, width=18).pack(side="left")
         ttk.Label(self, text="默认：Win + Alt + O", foreground="#666").pack(anchor="w", padx=24, pady=(4, 14)); ttk.Button(self, text="保存", command=self.finish).pack(pady=(0, 18))
         self.grab_set(); self.protocol("WM_DELETE_WINDOW", self.finish)
+        translate_widgets(self, settings)
 
     def finish(self):
         value = self.hotkey.get().strip().lower()
@@ -296,17 +304,46 @@ class Workbench(tk.Toplevel):
         self.geometry(f"{width}x{height}+{left + (screen_w - width) // 2}+{top + 12}")
         self.minsize(min(850, width), min(560, height))
         self.full_day = tk.BooleanVar(value=True)
-        self.events = master.events; self.selected_date = dt.date.today(); self.input_image = None; self._build(); self.refresh_calendar(); self.refresh_processes(); self.after(4000, self.auto_refresh_processes); self.after(3000, self.auto_refresh_feeds)
+        self.events = master.events; self.selected_date = local_now(master.settings).date(); self.input_image = None; self._build(); self.refresh_calendar(); self.refresh_processes(); self.after(4000, self.auto_refresh_processes); self.after(3000, self.auto_refresh_feeds)
 
     def _build(self):
         top = ttk.Frame(self, padding=10); top.pack(fill="x"); self.date_label = ttk.Label(top, font=("Microsoft YaHei UI", 14, "bold")); self.date_label.pack(side="left"); self.status = ttk.Label(top, text="截图 Ctrl+C 后，在输入框按 Ctrl+V"); self.status.pack(side="right"); self._update_date()
-        notebook = ttk.Notebook(self); notebook.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        navigation = ttk.Frame(self); navigation.pack(fill="x", padx=10, pady=(0, 8))
+        style = ttk.Style(self); style.layout("Pages.TNotebook.Tab", [])
+        notebook = ttk.Notebook(self, style="Pages.TNotebook"); self.notebook = notebook
+        notebook.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         calendar_tab = ttk.Frame(notebook, padding=8); notebook.add(calendar_tab, text="日历与 DDL"); self._build_calendar_tab(calendar_tab)
         process_tab = ttk.Frame(notebook, padding=8); notebook.add(process_tab, text="运行中的程序"); self._build_process_tab(process_tab)
         web_tab = ttk.Frame(notebook, padding=8); notebook.add(web_tab, text="网址提醒"); self._build_feeds_tab(web_tab)
         settings_tab = ttk.Frame(notebook, padding=20); notebook.add(settings_tab, text="设置"); self._build_settings_tab(settings_tab)
+        self.nav_buttons = []
+        for index, label in enumerate(("日历与 DDL", "运行中的程序", "网址提醒", "设置")):
+            navigation.columnconfigure(index, weight=1, uniform="tabs")
+            button = ttk.Button(navigation, text=tr(label, self.master.settings), style="Nav.TButton", command=lambda i=index: notebook.select(i))
+            button.grid(row=0, column=index, sticky="ew", padx=2)
+            self.nav_buttons.append(button)
+        def mark_tab(_event=None):
+            active = notebook.index(notebook.select())
+            for index, button in enumerate(self.nav_buttons):
+                button.state(["pressed"] if index == active else ["!pressed"])
+        notebook.bind("<<NotebookTabChanged>>", mark_tab)
+        mark_tab()
+        translate_widgets(self, self.master.settings)
+
+    def apply_preferences(self):
+        draft = self.input_box.get('1.0', 'end-1c')
+        selected, image = self.selected_date, self.input_image
+        apply_tags(self.master.settings)
+        master = self.master
+        self.destroy()
+        replacement = Workbench(master); master.workbench = replacement
+        replacement.selected_date = selected; replacement.input_image = image
+        replacement.input_box.insert('1.0', draft)
+        replacement.refresh_calendar(); replacement.notebook.select(3)
 
     def _build_settings_tab(self, parent):
+        preferences = PreferencesPanel(parent, self.master.settings, save_settings, self.apply_preferences)
+        preferences.pack(side="right", fill="both", expand=True, padx=(30, 0))
         ttk.Label(parent, text="桌宠设置", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", pady=(0, 18))
         actions = (
             ("上传图片桌宠形象", self.master.upload_avatar),
@@ -355,15 +392,15 @@ class Workbench(tk.Toplevel):
 
     def _build_calendar_tab(self, parent):
         body = ttk.Frame(parent); body.pack(fill="both", expand=True); left = ttk.Frame(body); left.pack(side="left", fill="both", expand=True); nav = ttk.Frame(left); nav.pack(fill="x")
-        ttk.Button(nav, text="‹", width=3, command=lambda: self.shift_month(-1)).pack(side="left"); self.month_label = ttk.Label(nav, width=16, anchor="center", font=("Microsoft YaHei UI", 11, "bold")); self.month_label.pack(side="left"); ttk.Button(nav, text="›", width=3, command=lambda: self.shift_month(1)).pack(side="left"); ttk.Button(nav, text="今天", command=lambda: self.select_date(dt.date.today())).pack(side="right")
+        ttk.Button(nav, text="‹", width=3, command=lambda: self.shift_month(-1)).pack(side="left"); self.month_label = ttk.Label(nav, width=16, anchor="center", font=("Microsoft YaHei UI", 11, "bold")); self.month_label.pack(side="left"); ttk.Button(nav, text="›", width=3, command=lambda: self.shift_month(1)).pack(side="left"); ttk.Button(nav, text="今天", command=lambda: self.select_date(local_now(self.master.settings).date())).pack(side="right")
         self.calendar_frame = ttk.Frame(left); self.calendar_frame.pack(fill="x", pady=8); legend = ttk.Frame(left); legend.pack(fill="x", pady=(0, 8))
-        for kind, label in EVENT_LABELS.items(): tk.Label(legend, text=f"  {label}  ", bg=EVENT_COLORS[kind]).pack(side="left", padx=2)
+        for index, (kind, label) in enumerate(EVENT_LABELS.items()): tk.Label(legend, text=f"  {label}  ", bg=EVENT_COLORS[kind], fg=foreground(EVENT_COLORS[kind])).grid(row=index // 3, column=index % 3, sticky="ew", padx=2, pady=2)
         right = ttk.LabelFrame(body, text="当天时间安排", padding=8); right.pack(side="right", fill="both", expand=True, padx=(14, 0)); self.day_title = ttk.Label(right, font=("Microsoft YaHei UI", 11, "bold")); self.day_title.pack(anchor="w")
         timeline_frame = ttk.Frame(right); timeline_frame.pack(fill="both", expand=True, pady=6); self.timeline = tk.Canvas(timeline_frame, height=300, background="white", highlightthickness=0); timeline_scroll = ttk.Scrollbar(timeline_frame, orient="vertical", command=self.timeline.yview); self.timeline.configure(yscrollcommand=timeline_scroll.set); self.timeline.pack(side="left", fill="both", expand=True); timeline_scroll.pack(side="right", fill="y"); self.timeline.bind("<Configure>", lambda _e: self.refresh_timeline())
         ttk.Checkbutton(right, text="显示全天（取消勾选可放大时间轴）", variable=self.full_day, command=self.refresh_timeline).pack(anchor="w")
         self.timeline.bind("<MouseWheel>", lambda event: self.timeline.yview_scroll(-int(event.delta / 120), "units"))
         ttk.Label(right, text="添加文字或规律事件，例如：9月10-29每天上午2点上课").pack(anchor="w"); self.input_box = tk.Text(right, height=4, wrap="word"); self.input_box.pack(fill="x", pady=4); self.input_box.bind("<Control-v>", self.on_paste)
-        controls = ttk.Frame(right); controls.pack(fill="x"); self.kind_var = tk.StringVar(value="自动识别"); self.kind_values = {"自动识别": "auto", "DDL": "ddl", "普通事件": "normal", "规律事件": "regular", "会议": "meeting"}; ttk.Combobox(controls, textvariable=self.kind_var, values=list(self.kind_values), state="readonly", width=10).pack(side="left"); ttk.Button(controls, text="解析并添加", command=self.add_event_text).pack(side="left", padx=5); ttk.Button(controls, text="编辑", command=self.edit_event).pack(side="left"); ttk.Button(controls, text="完成/恢复", command=self.toggle_done).pack(side="left", padx=5); ttk.Button(controls, text="删除选中", command=self.delete_event).pack(side="right")
+        controls = ttk.Frame(right); controls.pack(fill="x"); self.kind_var = tk.StringVar(value=tr("自动识别", self.master.settings)); self.kind_values = {tr("自动识别", self.master.settings): "auto", **{name: key for key, name in EVENT_LABELS.items()}}; ttk.Combobox(controls, textvariable=self.kind_var, values=list(self.kind_values), state="readonly", width=10).pack(side="left"); ttk.Button(controls, text="解析并添加", command=self.add_event_text).pack(side="left", padx=5); ttk.Button(controls, text="编辑", command=self.edit_event).pack(side="left"); ttk.Button(controls, text="完成/恢复", command=self.toggle_done).pack(side="left", padx=5); ttk.Button(controls, text="删除选中", command=self.delete_event).pack(side="right")
 
     def _build_process_tab(self, parent):
         columns = ("title", "name", "pid", "memory"); self.process_tree = ttk.Treeview(parent, columns=columns, show="headings")
@@ -371,7 +408,7 @@ class Workbench(tk.Toplevel):
         self.process_tree.pack(fill="both", expand=True); ttk.Button(parent, text="刷新当前程序", command=self.refresh_processes).pack(anchor="e", pady=6)
 
     def _update_date(self):
-        self.date_label.config(text=dt.datetime.now().strftime("%Y年%m月%d日  %A")); self.after(30_000, self._update_date)
+        self.date_label.config(text=local_now(self.master.settings).strftime("%Y-%m-%d  %H:%M %Z")); self.after(30_000, self._update_date)
 
     def shift_month(self, delta):
         year, month = self.selected_date.year, self.selected_date.month + delta
@@ -383,15 +420,16 @@ class Workbench(tk.Toplevel):
 
     def refresh_calendar(self):
         for child in self.calendar_frame.winfo_children(): child.destroy()
-        year, month = self.selected_date.year, self.selected_date.month; self.month_label.config(text=f"{year}年{month}月")
-        for col, name in enumerate(("一", "二", "三", "四", "五", "六", "日")):
+        year, month = self.selected_date.year, self.selected_date.month; self.month_label.config(text=f"{year}-{month:02d}")
+        weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun") if self.master.settings.get('language') == 'en' else ("一", "二", "三", "四", "五", "六", "日")
+        for col, name in enumerate(weekdays):
             ttk.Label(self.calendar_frame, text=name, anchor="center").grid(row=0, column=col, sticky="ew"); self.calendar_frame.columnconfigure(col, weight=1)
         for row, week in enumerate(calendar.monthcalendar(year, month), 1):
             for col, day in enumerate(week):
                 if not day: ttk.Label(self.calendar_frame, text="").grid(row=row, column=col, padx=2, pady=2); continue
-                value = dt.date(year, month, day); events = [x for x in self.events if x["date"] == value.isoformat()]; priority = {"ddl": 0, "meeting": 1, "regular": 2, "normal": 3}; events.sort(key=lambda x: priority.get(x.get("kind"), 4)); bg = EVENT_COLORS[events[0]["kind"]] if events else ("#e6f4ea" if value == dt.date.today() else "white")
-                tk.Button(self.calendar_frame, text=str(day), bg=bg, relief="sunken" if value == self.selected_date else "raised", command=lambda v=value: self.select_date(v)).grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
-        self.day_title.config(text=f"{self.selected_date.isoformat()} 的安排"); self.selected_event = None; self.refresh_timeline()
+                value = dt.date(year, month, day); events = [x for x in self.events if x["date"] == value.isoformat()]; priority = {"ddl": 0, "meeting": 1, "regular": 2, "normal": 3}; events.sort(key=lambda x: priority.get(x.get("kind"), 4)); bg = EVENT_COLORS.get(events[0]["kind"], EVENT_COLORS["normal"]) if events else ("#e6f4ea" if value == local_now(self.master.settings).date() else "white")
+                tk.Button(self.calendar_frame, text=str(day), bg=bg, fg=foreground(bg) if bg.startswith("#") else "#111", relief="sunken" if value == self.selected_date else "raised", command=lambda v=value: self.select_date(v)).grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
+        self.day_title.config(text=f"{self.selected_date.isoformat()} · " + tr("当天时间安排", self.master.settings)); self.selected_event = None; self.refresh_timeline()
 
     def refresh_timeline(self):
         if not hasattr(self, "timeline") or not self.timeline.winfo_exists(): return
@@ -418,7 +456,7 @@ class Workbench(tk.Toplevel):
             kind = event.get("kind", "normal"); color = EVENT_COLORS.get(kind, EVENT_COLORS["normal"]); selected = event is getattr(self, "selected_event", None); tag = f"event_{id(event)}"
             canvas.create_rectangle(label_width + 3, y1 + 2, width - 4, max(y2 - 2, y1 + 22), fill=color, outline="#555" if selected else color, width=2 if selected else 1, tags=(tag,))
             prefix = "✓ " if event.get("done") else ""; when = "全天" if start == "全天" else f"{start}-{end}"
-            canvas.create_text(label_width + 9, y1 + 5, anchor="nw", text=f"{when} [{EVENT_LABELS.get(kind, '普通')}] {prefix}{event['title']}", fill="#333", font=("Microsoft YaHei UI", 9), tags=(tag,))
+            canvas.create_text(label_width + 9, y1 + 5, anchor="nw", text=f"{when} [{EVENT_LABELS.get(kind, '普通')}] {prefix}{event['title']}", fill=foreground(color), font=("Microsoft YaHei UI", 10), tags=(tag,))
             canvas.tag_bind(tag, "<Button-1>", lambda _e, item=event: self.select_event(item)); canvas.tag_bind(tag, "<Double-Button-1>", lambda _e, item=event: self.edit_event(item))
 
     def select_event(self, event): self.selected_event = event; self.refresh_timeline()
@@ -476,14 +514,15 @@ class Workbench(tk.Toplevel):
         dialog = tk.Toplevel(self); dialog.title("编辑日程"); dialog.transient(self); dialog.grab_set(); fields = {}
         for row, (label, key, default) in enumerate((("事项", "title", event["title"]), ("开始时间 HH:MM", "start", event.get("start", "全天")), ("结束时间 HH:MM", "end", event.get("end", "全天")))):
             ttk.Label(dialog, text=label).grid(row=row, column=0, padx=10, pady=6, sticky="w"); fields[key] = tk.StringVar(value=default); ttk.Entry(dialog, textvariable=fields[key], width=28).grid(row=row, column=1, padx=10, pady=6)
-        kind_names = {value: key for key, value in EVENT_LABELS.items()}; kind_names["ddl"] = "DDL"; kind_names["normal"] = "普通"; kind_names["regular"] = "规律"; kind_names["meeting"] = "会议"
-        kind_var = tk.StringVar(value=kind_names.get(event.get("kind"), "普通")); ttk.Label(dialog, text="类型").grid(row=3, column=0, padx=10, pady=6, sticky="w"); ttk.Combobox(dialog, textvariable=kind_var, values=("DDL", "普通", "规律", "会议"), state="readonly").grid(row=3, column=1, padx=10, pady=6, sticky="ew")
+        kind_names = EVENT_LABELS
+        kind_var = tk.StringVar(value=kind_names.get(event.get("kind"), "普通")); ttk.Label(dialog, text="类型").grid(row=3, column=0, padx=10, pady=6, sticky="w"); ttk.Combobox(dialog, textvariable=kind_var, values=list(EVENT_LABELS.values()), state="readonly").grid(row=3, column=1, padx=10, pady=6, sticky="ew")
         def save_edit():
             start, end = fields["start"].get().strip(), fields["end"].get().strip()
             if start != "全天" and (not re.fullmatch(r"\d{2}:\d{2}", start) or not re.fullmatch(r"\d{2}:\d{2}", end)):
                 messagebox.showwarning("时间格式", "请输入 24 小时制时间，例如 09:30。", parent=dialog); return
-            event.update({"title": fields["title"].get().strip(), "start": start, "end": end, "time": start, "kind": {"DDL": "ddl", "普通": "normal", "规律": "regular", "会议": "meeting"}[kind_var.get()]}); save_events(self.events); dialog.destroy(); self.refresh_calendar()
+            event.update({"title": fields["title"].get().strip(), "start": start, "end": end, "time": start, "kind": {label: key for key, label in EVENT_LABELS.items()}[kind_var.get()]}); save_events(self.events); dialog.destroy(); self.refresh_calendar()
         ttk.Button(dialog, text="保存", command=save_edit).grid(row=4, column=1, pady=10, sticky="e")
+        translate_widgets(dialog, self.master.settings)
 
     def refresh_processes(self):
         for item in self.process_tree.get_children(): self.process_tree.delete(item)
@@ -500,7 +539,13 @@ class Workbench(tk.Toplevel):
 
 class DesktopPet(tk.Tk):
     def __init__(self, settings):
+        apply_tags(settings)
         super().__init__(); self.settings = settings; self.events = load_events(); self.workbench = None; self.avatar_photo = None; self.drag_start = None; self.click_job = None
+        self.option_add("*Font", ("Microsoft YaHei UI", 11))
+        style = ttk.Style(self)
+        style.configure(".", font=("Microsoft YaHei UI", 11))
+        style.configure("Nav.TButton", font=("Microsoft YaHei UI", 12, "bold"), padding=(8, 14))
+        style.configure("Treeview", rowheight=32)
         self.feeds = load_feeds(); self.checking_feeds = set(); self.title("Desktop Pet"); self.overrideredirect(True); self.attributes("-topmost", True); self.configure(bg="#ff00ff")
         try: self.attributes("-transparentcolor", "#ff00ff")
         except tk.TclError: pass
@@ -655,7 +700,7 @@ class DesktopPet(tk.Tk):
     def finish_feed_check(self, url, result, error):
         self.checking_feeds.discard(url); feed = next((item for item in self.feeds if item["url"] == url), None)
         if not feed: return
-        feed["last_checked"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+        feed["last_checked"] = local_now(self.settings).strftime("%Y-%m-%d %H:%M %Z")
         if error:
             feed["error"] = error[:160]
         else:
@@ -675,7 +720,7 @@ class DesktopPet(tk.Tk):
 
     def check_event_reminders(self):
         if not self.winfo_exists(): return
-        now = dt.datetime.now().replace(second=0, microsecond=0)
+        now = local_now(self.settings).replace(second=0, microsecond=0, tzinfo=None)
         for event in self.events:
             if event.get("done"): continue
             clock = event.get("start", event.get("time", "全天")); clock = "09:00" if clock == "全天" and event.get("kind") == "ddl" else clock
@@ -695,6 +740,7 @@ class DesktopPet(tk.Tk):
 
 
 def main():
+    enable_dpi()
     settings = load_settings(); root = DesktopPet(settings); root.withdraw()
     if settings.get("first_run", True): root.after(100, lambda: FirstRunDialog(root, settings))
     elif settings.get("activation") == "startup" or "--show" in sys.argv: root.deiconify()
