@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from html import unescape
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -35,6 +36,7 @@ class PageParser(HTMLParser):
 
 
 def summarize(text: str, limit: int = 260) -> str:
+    text = unescape(re.sub(r"<[^>]+>", " ", text))
     text = re.sub(r"\s+", " ", text).strip()
     if not text: return "来源没有提供文字简介。"
     sentences = [part.strip() for part in re.split(r"(?<=[。！？.!?])\s*", text) if part.strip()]
