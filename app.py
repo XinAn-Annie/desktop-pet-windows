@@ -13,6 +13,8 @@ import json
 import os
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -51,6 +53,7 @@ SETTINGS_FILE = APP_DIR / "settings.json"
 EVENTS_FILE = APP_DIR / "events.json"
 FEEDS_FILE = APP_DIR / "feeds.json"
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+CONTROL_PORT = 48761
 EVENT_COLORS = {"ddl": "#ffd6d6", "normal": "#fff1b8", "regular": "#cfe3ff", "meeting": "#ffd1e3"}
 EVENT_LABELS = {"ddl": "DDL", "normal": "普通", "regular": "规律", "meeting": "会议"}
 
@@ -156,21 +159,30 @@ def visible_app_processes() -> list[tuple[str, str, int, str]]:
     return results
 
 
-def set_autostart(enabled: bool):
+def run_hidden(script_name: str) -> bool:
+    """Start one of this folder's VBS launchers without opening a console."""
+    script = Path(__file__).with_name(script_name)
+    if os.name != "nt" or not script.exists():
+        return False
+    try:
+        subprocess.Popen(["wscript.exe", str(script)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return True
+    except OSError:
+        return False
+
+
+def set_activation_mode(activation: str) -> bool:
+    """Choose exactly one login-time program: pet itself or the hotkey launcher."""
     if os.name != "nt":
         return False
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            if enabled:
-                exe = sys.executable[:-10] + "pythonw.exe" if sys.executable.lower().endswith("python.exe") else sys.executable
-                command = f'"{exe}" "{Path(__file__).resolve()}" --startup'
-                winreg.SetValueEx(key, "DesktopPet", 0, winreg.REG_SZ, command)
-            else:
-                try:
-                    winreg.DeleteValue(key, "DesktopPet")
-                except FileNotFoundError:
-                    pass
+            script = "start_desktop_pet.vbs" if activation == "startup" else "start_hotkey_launcher.vbs"
+            command = f'"{os.environ.get("WINDIR", r"C:\\Windows")}\\System32\\wscript.exe" "{Path(__file__).with_name(script)}"'
+            winreg.SetValueEx(key, "DesktopPet", 0, winreg.REG_SZ, command)
+        if activation == "hotkey":
+            run_hidden("start_hotkey_launcher.vbs")
         return True
     except OSError:
         return False
@@ -254,8 +266,8 @@ class SettingsDialog(tk.Toplevel):
         self.activation = tk.StringVar(value=settings.get("activation", "hotkey")); self.hotkey = tk.StringVar(value=settings.get("hotkey", "win+alt+o"))
         ttk.Label(self, text="桌宠启动方式", font=("Microsoft YaHei UI", 14, "bold")).pack(padx=24, pady=(18, 8))
         ttk.Radiobutton(self, text="登录 Windows 后自动显示桌宠", variable=self.activation, value="startup").pack(anchor="w", padx=24, pady=4)
-        ttk.Radiobutton(self, text="登录后在后台运行，按快捷键显示/隐藏", variable=self.activation, value="hotkey").pack(anchor="w", padx=24, pady=4)
-        ttk.Label(self, text="快捷键需要后台程序保持运行，因此此模式会在登录后启动到系统托盘，桌宠本体保持隐藏。", wraplength=360, foreground="#666").pack(anchor="w", padx=24, pady=(4, 10))
+        ttk.Radiobutton(self, text="使用独立快捷键启动器（桌宠不用常驻）", variable=self.activation, value="hotkey").pack(anchor="w", padx=24, pady=4)
+        ttk.Label(self, text="快捷键启动器会在登录后静默运行。按快捷键时：桌宠未运行则启动，已运行则显示/隐藏。", wraplength=390, foreground="#666").pack(anchor="w", padx=24, pady=(4, 10))
         row = ttk.Frame(self); row.pack(fill="x", padx=24); ttk.Label(row, text="唤醒快捷键：").pack(side="left"); ttk.Entry(row, textvariable=self.hotkey, width=18).pack(side="left")
         ttk.Label(self, text="默认：Win + Alt + O", foreground="#666").pack(anchor="w", padx=24, pady=(4, 14)); ttk.Button(self, text="保存", command=self.finish).pack(pady=(0, 18))
         self.grab_set(); self.protocol("WM_DELETE_WINDOW", self.finish)
@@ -265,7 +277,7 @@ class SettingsDialog(tk.Toplevel):
         if not parse_hotkey(value):
             messagebox.showwarning("快捷键格式", "请输入类似 win+alt+o 或 ctrl+shift+p 的组合。", parent=self); return
         self.settings.update({"first_run": False, "activation": self.activation.get(), "hotkey": value}); save_settings(self.settings)
-        if not set_autostart(True): messagebox.showwarning("开机启动未设置", "Windows 未允许写入当前用户的开机启动项。可通过系统托盘手动启动桌宠。", parent=self)
+        if not set_activation_mode(self.activation.get()): messagebox.showwarning("启动方式未设置", "Windows 未允许写入当前用户的登录启动项。请以普通用户重新打开桌宠后再保存。", parent=self)
         self.master.apply_activation_visibility(); self.destroy()
 
 
@@ -455,13 +467,14 @@ class Workbench(tk.Toplevel):
 
 class DesktopPet(tk.Tk):
     def __init__(self, settings):
-        super().__init__(); self.settings = settings; self.events = load_events(); self.workbench = None; self.avatar_photo = None; self.drag_start = None; self.click_job = None; self.hotkey_was_down = False
+        super().__init__(); self.settings = settings; self.events = load_events(); self.workbench = None; self.avatar_photo = None; self.drag_start = None; self.click_job = None
         self.feeds = load_feeds(); self.checking_feeds = set(); self.title("Desktop Pet"); self.overrideredirect(True); self.attributes("-topmost", True); self.configure(bg="#ff00ff")
         try: self.attributes("-transparentcolor", "#ff00ff")
         except tk.TclError: pass
         position = settings.get("position", [80, 80]); self.geometry(f"170x190+{int(position[0])}+{int(position[1])}"); self.canvas = tk.Canvas(self, width=170, height=190, bg="#ff00ff", highlightthickness=0); self.canvas.pack(); self.draw_pet()
-        self.canvas.bind("<ButtonPress-1>", self.begin_drag); self.canvas.bind("<B1-Motion>", self.drag_pet); self.canvas.bind("<ButtonRelease-1>", self.end_drag); self.canvas.bind("<Button-3>", self.context_menu); self.bind("<Escape>", lambda _e: self.destroy()); self.protocol("WM_DELETE_WINDOW", self.destroy); self.after(100, self.poll_hotkey)
+        self.canvas.bind("<ButtonPress-1>", self.begin_drag); self.canvas.bind("<B1-Motion>", self.drag_pet); self.canvas.bind("<ButtonRelease-1>", self.end_drag); self.canvas.bind("<Button-3>", self.context_menu); self.bind("<Escape>", lambda _e: self.destroy()); self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.tray = None; self.notified = set(); self.start_tray(); self.after(5000, self.check_event_reminders); self.after(15000, self.poll_feeds)
+        self.start_control_server()
 
     def draw_pet(self):
         self.canvas.delete("all")
@@ -586,16 +599,21 @@ class DesktopPet(tk.Tk):
         else:
             self.settings["position"] = [self.winfo_x(), self.winfo_y()]; save_settings(self.settings)
 
-    def poll_hotkey(self):
-        parsed = parse_hotkey(self.settings.get("hotkey", "win+alt+o")); down = False
-        if self.settings.get("activation") == "hotkey" and parsed and os.name == "nt":
-            modifiers, key = parsed; user32 = ctypes.windll.user32
-            down = bool(user32.GetAsyncKeyState(key) & 0x8000)
-            for flag, vks in ((0x0001, (0x12,)), (0x0002, (0x11,)), (0x0004, (0x10,)), (0x0008, (0x5B, 0x5C))):
-                if modifiers & flag: down = down and any(bool(user32.GetAsyncKeyState(vk) & 0x8000) for vk in vks)
-        if down and not self.hotkey_was_down: self.deiconify() if self.state() == "withdrawn" else self.withdraw()
-        self.hotkey_was_down = down
-        self.after(100, self.poll_hotkey)
+    def start_control_server(self):
+        """Receive toggle commands from the independent hotkey launcher."""
+        def listen():
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+                    server.bind(("127.0.0.1", CONTROL_PORT))
+                    while self.winfo_exists():
+                        message, address = server.recvfrom(64)
+                        if message == b"toggle":
+                            self.after(0, self.toggle_pet)
+                            server.sendto(b"ok", address)
+            except OSError:
+                # Another pet instance already owns the local control port.
+                pass
+        threading.Thread(target=listen, name="desktop-pet-control", daemon=True).start()
 
     def start_tray(self):
         if not pystray or not Image:
@@ -685,7 +703,7 @@ class DesktopPet(tk.Tk):
 def main():
     settings = load_settings(); root = DesktopPet(settings); root.withdraw()
     if settings.get("first_run", True): root.after(100, lambda: FirstRunDialog(root, settings))
-    elif settings.get("activation") == "startup": root.deiconify()
+    elif settings.get("activation") == "startup" or "--show" in sys.argv: root.deiconify()
     root.mainloop()
 
 
