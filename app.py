@@ -184,6 +184,20 @@ def set_activation_mode(activation: str) -> bool:
         return False
     try:
         import winreg
+        startup_folder = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        startup_script = startup_folder / "DesktopPet.vbs"
+        launcher_script = Path(__file__).with_name("start_hotkey_launcher.vbs")
+        if activation == "hotkey":
+            startup_folder.mkdir(parents=True, exist_ok=True)
+            # Windows may skip a Run entry after an update; the Startup folder
+            # supplies a second login route. The launcher itself is single-instance.
+            startup_script.write_text(
+                'CreateObject("WScript.Shell").Run ' +
+                'Chr(34) & "' + str(launcher_script).replace('"', '""') + '" & Chr(34), 0, False\n',
+                encoding="utf-8",
+            )
+        elif startup_script.exists():
+            startup_script.unlink()
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
             script = "start_desktop_pet.vbs" if activation == "startup" else "start_hotkey_launcher.vbs"
             command = f'"{os.environ.get("WINDIR", r"C:\\Windows")}\\System32\\wscript.exe" "{Path(__file__).with_name(script)}"'
